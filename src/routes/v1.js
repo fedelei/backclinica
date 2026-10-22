@@ -146,7 +146,9 @@ http://localhost:4000/vl/profesionales?clinicaId=2&especialidad=Dermatologia
 
 
 ////http://localhost:4000/vl/profesionales?clinicaId=2&especialidad=Cardiologia
-router.get('/profesionales', autenticarToken, async (req, res) => {
+//// Endpoint público — parte del flujo de solicitud de turnos (pacientes sin auth).
+//// El equivalente autenticado para admin es GET /v1/clinicas/:clinicId/profesionales.
+router.get('/profesionales', async (req, res) => {
   try {
     const { clinicaId, especialidad } = req.query;
 
