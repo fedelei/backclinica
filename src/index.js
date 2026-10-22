@@ -73,7 +73,7 @@ app.use(cors(corsOptions));
 // ==============================
 
 app.use(indexRoutes);
-app.use(authRoutes);
+app.use("/authentication", authRoutes);
 app.use("/administracion", administracionRoutes);
 app.use("/clinica", clinicaRoutes);
 app.use("/v1", v1Routes);
