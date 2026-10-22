@@ -17,6 +17,7 @@ import jwt from "jsonwebtoken";
 
 import {
     autenticarToken,
+    autenticarTokenOpcional,
     obtenerHashToken
 } from "../middlewares/autenticarToken.js";
 
@@ -699,356 +700,227 @@ router.get(
 
 
 /**
- * POST /v1/turnos/reservar
- * Endpoint público del wizard de pacientes (sin JWT).
- * Crea/reutiliza el paciente por DNI+clínica e inserta el turno con id_paciente.
+ * Crea un turno (wizard público o panel).
+ * - Sin JWT: reserva pública (paciente online).
+ * - Con JWT: exige que la clínica del token coincida con clinicId.
+ * Upsert de paciente por DNI+clínica e INSERT con id_paciente.
  */
-router.post(
-    '/turnos/reservar',
-    async (req, res) => {
-        let conexion;
+async function crearTurnoHandler(req, res) {
+    let conexion;
 
-        try {
-            const {
-                clinicId,
-                professionalId,
-                date,
-                time,
-                status = 'pendiente',
-                reason,
-                patientName,
-                patientDni,
-                patientEmail,
-                patientPhone,
-                healthInsurance
-            } = req.body;
+    try {
+        const {
+            clinicId,
+            professionalId,
+            date,
+            time,
+            status: statusBody,
+            reason,
+            patientName,
+            patientDni,
+            patientEmail,
+            patientPhone,
+            healthInsurance
+        } = req.body;
 
-            if (
-                !clinicId ||
-                !professionalId ||
-                !date ||
-                !time ||
-                !patientName ||
-                !patientDni
-            ) {
-                return res.status(400).json({
-                    message: 'Faltan datos obligatorios del turno o del paciente'
-                });
-            }
+        // Panel autenticado → confirmado por defecto; wizard público → pendiente
+        const status = statusBody
+            ?? (req.user ? 'confirmado' : 'pendiente');
 
-            if (
-                !/^\d+$/.test(String(clinicId)) ||
-                !/^\d+$/.test(String(professionalId))
-            ) {
-                return res.status(400).json({
-                    message: 'clinicId o professionalId inválido'
-                });
-            }
-
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-                return res.status(400).json({
-                    message: 'La fecha debe tener formato YYYY-MM-DD'
-                });
-            }
-
-            if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
-                return res.status(400).json({
-                    message: 'El horario debe tener formato HH:mm'
-                });
-            }
-
-            if (!['confirmado', 'pendiente', 'cancelado'].includes(status)) {
-                return res.status(400).json({
-                    message: 'Estado de turno inválido'
-                });
-            }
-
-            const nameParts = String(patientName).trim().split(/\s+/);
-            const nombre = nameParts[0] || String(patientName).trim();
-            const apellido = nameParts.slice(1).join(' ') || nombre;
-
-            conexion = await pool.getConnection();
-            await conexion.beginTransaction();
-
-            // Verificar que el profesional pertenece a la clínica
-            const profesionales = await conexion.query(
-                `SELECT u.id
-                 FROM usuarios u
-                 INNER JOIN trabajo t
-                   ON t.id_usuario = u.id
-                 WHERE u.id = ?
-                   AND t.id_clinica = ?
-                   AND u.medico = 'Si'
-                 LIMIT 1`,
-                [professionalId, clinicId]
-            );
-
-            if (profesionales.length === 0) {
-                await conexion.rollback();
-                return res.status(400).json({
-                    message: 'El profesional no pertenece a la clínica indicada'
-                });
-            }
-
-            // Upsert paciente por DNI + clínica
-            const pacientesExistentes = await conexion.query(
-                `SELECT id
-                 FROM pacientes
-                 WHERE dni = ?
-                   AND id_clinica = ?
-                 LIMIT 1
-                 FOR UPDATE`,
-                [String(patientDni), clinicId]
-            );
-
-            let resolvedPatientId;
-
-            if (pacientesExistentes.length > 0) {
-                resolvedPatientId = pacientesExistentes[0].id;
-
-                await conexion.query(
-                    `UPDATE pacientes
-                     SET nombre = ?,
-                         apellido = ?,
-                         email = COALESCE(?, email),
-                         telefono = COALESCE(?, telefono),
-                         obra_social = COALESCE(?, obra_social)
-                     WHERE id = ?`,
-                    [
-                        nombre,
-                        apellido,
-                        patientEmail || null,
-                        patientPhone || null,
-                        healthInsurance || null,
-                        resolvedPatientId
-                    ]
-                );
-            } else {
-                const nuevoPaciente = await conexion.query(
-                    `INSERT INTO pacientes
-                        (nombre, apellido, dni, email, telefono, obra_social, id_clinica)
-                     VALUES (?, ?, ?, ?, ?, ?, ?)`,
-                    [
-                        nombre,
-                        apellido,
-                        String(patientDni),
-                        patientEmail || null,
-                        patientPhone || null,
-                        healthInsurance || null,
-                        clinicId
-                    ]
-                );
-                resolvedPatientId = nuevoPaciente.insertId;
-            }
-
-            const duplicados = await conexion.query(
-                `SELECT id
-                 FROM turnos
-                 WHERE id_clinica = ?
-                   AND id_usuario = ?
-                   AND fecha = ?
-                   AND hora = ?
-                 LIMIT 1
-                 FOR UPDATE`,
-                [clinicId, professionalId, date, time]
-            );
-
-            if (duplicados.length > 0) {
-                await conexion.rollback();
-                return res.status(409).json({
-                    message: 'El profesional ya tiene un turno en esa fecha y horario'
-                });
-            }
-
-            const resultado = await conexion.query(
-                `INSERT INTO turnos
-                    (id_clinica, id_usuario, fecha, hora, id_paciente, estado)
-                 VALUES (?, ?, ?, ?, ?, ?)`,
-                [clinicId, professionalId, date, time, resolvedPatientId, status]
-            );
-
-            await conexion.commit();
-
-            return res.status(201).json({
-                id: resultado.insertId.toString(),
-                clinicId: String(clinicId),
-                professionalId: String(professionalId),
-                patientId: String(resolvedPatientId),
-                date,
-                time,
-                status,
-                reason: reason ?? null,
-                patientName,
-                patientDni: String(patientDni),
-                patientEmail: patientEmail ?? null,
-                patientPhone: patientPhone ?? null,
-                healthInsurance: healthInsurance ?? null
+        if (
+            !clinicId ||
+            !professionalId ||
+            !date ||
+            !time ||
+            !patientName ||
+            !patientDni
+        ) {
+            return res.status(400).json({
+                message: 'Faltan datos obligatorios del turno o del paciente'
             });
+        }
 
-        } catch (error) {
-            if (conexion) {
-                await conexion.rollback();
-            }
-
-            console.error('Error al reservar turno público:', error);
-
-            return res.status(500).json({
-                message: 'Error al crear el turno'
+        if (
+            !/^\d+$/.test(String(clinicId)) ||
+            !/^\d+$/.test(String(professionalId))
+        ) {
+            return res.status(400).json({
+                message: 'clinicId o professionalId inválido'
             });
+        }
 
-        } finally {
-            if (conexion) {
-                conexion.release();
-            }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            return res.status(400).json({
+                message: 'La fecha debe tener formato YYYY-MM-DD'
+            });
+        }
+
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+            return res.status(400).json({
+                message: 'El horario debe tener formato HH:mm'
+            });
+        }
+
+        if (!['confirmado', 'pendiente', 'cancelado'].includes(status)) {
+            return res.status(400).json({
+                message: 'Estado de turno inválido'
+            });
+        }
+
+        // Si hay sesión de panel, restringir a su clínica
+        if (
+            req.user &&
+            Number(req.user.id_clinica) !== Number(clinicId)
+        ) {
+            return res.status(403).json({
+                message: 'No tenés acceso a esta clínica'
+            });
+        }
+
+        const nameParts = String(patientName).trim().split(/\s+/);
+        const nombre = nameParts[0] || String(patientName).trim();
+        const apellido = nameParts.slice(1).join(' ') || nombre;
+
+        conexion = await pool.getConnection();
+        await conexion.beginTransaction();
+
+        const profesionales = await conexion.query(
+            `SELECT u.id
+             FROM usuarios u
+             INNER JOIN trabajo t
+               ON CAST(t.id_usuario AS CHAR) COLLATE utf8mb4_general_ci =
+                  CAST(u.id AS CHAR) COLLATE utf8mb4_general_ci
+             WHERE u.id = ?
+               AND t.id_clinica = ?
+               AND u.medico = 'Si'
+             LIMIT 1`,
+            [professionalId, clinicId]
+        );
+
+        if (profesionales.length === 0) {
+            await conexion.rollback();
+            return res.status(400).json({
+                message: 'El profesional no pertenece a la clínica indicada'
+            });
+        }
+
+        const pacientesExistentes = await conexion.query(
+            `SELECT id
+             FROM pacientes
+             WHERE dni = ?
+               AND id_clinica = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [String(patientDni), clinicId]
+        );
+
+        let resolvedPatientId;
+
+        if (pacientesExistentes.length > 0) {
+            resolvedPatientId = pacientesExistentes[0].id;
+
+            await conexion.query(
+                `UPDATE pacientes
+                 SET nombre = ?,
+                     apellido = ?,
+                     email = COALESCE(?, email),
+                     telefono = COALESCE(?, telefono),
+                     obra_social = COALESCE(?, obra_social)
+                 WHERE id = ?`,
+                [
+                    nombre,
+                    apellido,
+                    patientEmail || null,
+                    patientPhone || null,
+                    healthInsurance || null,
+                    resolvedPatientId
+                ]
+            );
+        } else {
+            const nuevoPaciente = await conexion.query(
+                `INSERT INTO pacientes
+                    (nombre, apellido, dni, email, telefono, obra_social, id_clinica)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    nombre,
+                    apellido,
+                    String(patientDni),
+                    patientEmail || null,
+                    patientPhone || null,
+                    healthInsurance || null,
+                    clinicId
+                ]
+            );
+            resolvedPatientId = nuevoPaciente.insertId;
+        }
+
+        const duplicados = await conexion.query(
+            `SELECT id
+             FROM turnos
+             WHERE id_clinica = ?
+               AND id_usuario = ?
+               AND fecha = ?
+               AND hora = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [clinicId, professionalId, date, time]
+        );
+
+        if (duplicados.length > 0) {
+            await conexion.rollback();
+            return res.status(409).json({
+                message: 'El profesional ya tiene un turno en esa fecha y horario'
+            });
+        }
+
+        const resultado = await conexion.query(
+            `INSERT INTO turnos
+                (id_clinica, id_usuario, fecha, hora, id_paciente, estado)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [clinicId, professionalId, date, time, resolvedPatientId, status]
+        );
+
+        await conexion.commit();
+
+        return res.status(201).json({
+            id: resultado.insertId.toString(),
+            clinicId: String(clinicId),
+            professionalId: String(professionalId),
+            patientId: String(resolvedPatientId),
+            date,
+            time,
+            status,
+            reason: reason ?? null,
+            patientName,
+            patientDni: String(patientDni),
+            patientEmail: patientEmail ?? null,
+            patientPhone: patientPhone ?? null,
+            healthInsurance: healthInsurance ?? null
+        });
+
+    } catch (error) {
+        if (conexion) {
+            await conexion.rollback();
+        }
+
+        console.error('Error al crear turno:', error);
+
+        return res.status(500).json({
+            message: 'Error al crear el turno'
+        });
+
+    } finally {
+        if (conexion) {
+            conexion.release();
         }
     }
-);
+}
 
+// Alias público (mismo handler). Preferir POST /turnos.
+router.post('/turnos/reservar', crearTurnoHandler);
 
-router.post(
-    '/turnos',
-    autenticarToken,
-    async (req, res) => {
-        let conexion;
-
-        try {
-            const {
-                clinicId,
-                professionalId,
-                patientId,
-                date,
-                time,
-                status = 'confirmado',
-                reason,
-                patientName,
-                patientDni,
-                patientEmail,
-                patientPhone,
-                healthInsurance
-            } = req.body;
-            // Validar datos obligatorios
-            console.log('Datos recibidos para crear turno:');
-            console.log('Datos recibidos para crear turno:',  clinicId ,professionalId ,date,time ,patientName,patientDni);
-
-            if (
-                !clinicId ||
-                !professionalId ||
-                !date ||
-                !time ||
-                !patientName ||
-                !patientDni
-            ) {
-                return res.status(400).json({
-                    message: 'Faltan datos obligatorios del turno o del paciente'
-                });
-            }
-
-            if (
-                !/^\d+$/.test(String(clinicId)) ||
-                !/^\d+$/.test(String(professionalId))
-            ) {
-                return res.status(400).json({
-                    message: 'clinicId o professionalId inválido'
-                });
-            }
-
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-                return res.status(400).json({
-                    message: 'La fecha debe tener formato YYYY-MM-DD'
-                });
-            }
-
-            if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
-                return res.status(400).json({
-                    message: 'El horario debe tener formato HH:mm'
-                });
-            }
-
-            if (!['confirmado', 'pendiente', 'cancelado'].includes(status)) {
-                return res.status(400).json({
-                    message: 'Estado de turno inválido'
-                });
-            }
-
-            // Validación básica de acceso a la clínica
-            if (
-                Number(req.user.id_clinica) !== Number(clinicId)
-            ) {
-                return res.status(403).json({
-                    message: 'No tenés acceso a esta clínica'
-                });
-            }
-
-            conexion = await pool.getConnection();
-            await conexion.beginTransaction();
-
-            // Comprobar si ya existe un turno en ese horario.
-            // Esta consulta supone que id_clinica existe en turnos.
-            const duplicados
-             = await conexion.query(
-                `SELECT id
-                 FROM turnos
-                 WHERE id_clinica = ?
-                   AND id_usuario = ?
-                   AND fecha = ?
-                   AND hora = ?
-                 LIMIT 1
-                 FOR UPDATE`,
-                [clinicId, professionalId, date, time]
-            );
-
-            if (duplicados.length > 0) {
-                await conexion.rollback();
-
-                return res.status(409).json({
-                    message: 'El profesional ya tiene un turno en esa fecha y horario'
-                });
-            }
-
-            // Crear el turno con las columnas conocidas.
-            const resultado = await conexion.query(
-                `INSERT INTO turnos
-                    (id_clinica, id_usuario, fecha, hora)
-                 VALUES (?, ?, ?, ?)`,
-                [clinicId, professionalId, date, time]
-            );
-
-            await conexion.commit();
-
-            return res.status(201).json({
-                id: resultado.insertId.toString(),
-                clinicId: String(clinicId),
-                professionalId: String(professionalId),
-                patientId: patientId ?? null,
-                date,
-                time,
-                status,
-                reason: reason ?? null,
-                patientName,
-                patientDni,
-                patientEmail: patientEmail ?? null,
-                patientPhone: patientPhone ?? null,
-                healthInsurance: healthInsurance ?? null
-            });
-
-        } catch (error) {
-            if (conexion) {
-                await conexion.rollback();
-            }
-
-            console.error('Error al crear turno:', error);
-
-            return res.status(500).json({
-                message: 'Error al crear el turno'
-            });
-
-        } finally {
-            if (conexion) {
-                conexion.release();
-            }
-        }
-    }
-);
+// Ruta principal: panel (con JWT) y wizard público (sin JWT)
+router.post('/turnos', autenticarTokenOpcional, crearTurnoHandler);
 
 
 
