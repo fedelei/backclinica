@@ -63,6 +63,7 @@ passport.use(
 // =====================================================
 // REGISTRO DE USUARIOS
 // =====================================================
+
 passport.use(
     "local.signupcl",
     new LocalStrategy(
@@ -73,14 +74,16 @@ passport.use(
         },
         async (req, usuario, password, done) => {
             try {
-                
-                // Obtener datos adicionales del formulario
-                let { nombre, nivel } = req.body;
+                // Recibir los datos del formulario
+                let { nombre, nivel, rol } = req.body;
 
                 // Nivel predeterminado
                 if (nivel === undefined) {
                     nivel = 1;
                 }
+
+                // Determinar si es médico según el rol
+                const medico = rol === "Administrador" ? "No" : "Si";
 
                 // Verificar si el usuario ya existe
                 const verif = await pool.query(
@@ -94,37 +97,38 @@ passport.use(
                     });
                 }
 
-                // Encriptar contraseña antes de almacenarla
+                // Encriptar contraseña
                 const encryptedPassword =
                     await helpers.encryptPassword(password);
 
-                // Insertar usuario en la base de datos
+                // Insertar usuario incluyendo el campo medico
                 const result = await pool.query(
                     `INSERT INTO usuarios
-                    SET password = ?, usuario = ?, nombre = ?, nivel = ?`,
+                    SET password = ?, usuario = ?, nombre = ?,
+                        nivel = ?, medico = ?`,
                     [
                         encryptedPassword,
                         usuario,
                         nombre,
                         nivel,
+                        medico,
                     ]
                 );
 
-                // Crear objeto con los datos del nuevo usuario
-                // No se incluye la contraseña
+                // Datos del nuevo usuario
                 const newUser = {
-                    id: result.insertId,
+                    id: Number(result.insertId),
                     usuario,
                     nombre,
-                    nivel,
+                    nivel: Number(nivel),
+                    rol,
+                    medico,
                 };
 
-                // Registro exitoso
                 return done(null, newUser);
 
             } catch (error) {
                 console.error("Error en local.signupcl:", error);
-
                 return done(error);
             }
         }

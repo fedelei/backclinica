@@ -15,10 +15,10 @@ import jwt from "jsonwebtoken";
 
 
 
-////Registro
+
+//// Registro
 router.post('/signupcl', (req, res, next) => {
 
-    // Registro de usuario con Passport
     passport.authenticate(
         'local.signupcl',
         { session: false },
@@ -26,7 +26,6 @@ router.post('/signupcl', (req, res, next) => {
 
             if (err) {
                 console.error(err);
-
                 return res.status(500).json({
                     message: 'Error del servidor.'
                 });
@@ -38,37 +37,36 @@ router.post('/signupcl', (req, res, next) => {
                 });
             }
 
-            // Datos que se incluirán en el JWT
-        const userForToken = {
-    id: Number(user.id),
-    usuario: user.usuario,
-    nivel: Number(user.nivel)
-};
+            const userForToken = {
+                id: Number(user.id),
+                usuario: user.usuario,
+                nivel: Number(user.nivel),
+                rol: user.rol,
+                medico: user.medico
+            };
 
-            // Generar token JWT
             const token = jwt.sign(
                 userForToken,
                 process.env.JWT_SECRET,
-                {
-                    expiresIn: '7d'
-                }
+                { expiresIn: '7d' }
             );
 
-            // Respuesta al frontend
-          return res.status(201).json({
-    message: 'Registrado exitosamente.',
-    user: {
-        id: Number(user.id),
-        usuario: user.usuario,
-        nombre: user.nombre,
-        nivel: Number(user.nivel)
-    },
-    token
-});
-
+            return res.status(201).json({
+                message: 'Registrado exitosamente.',
+                user: {
+                    id: Number(user.id),
+                    usuario: user.usuario,
+                    nombre: user.nombre,
+                    nivel: Number(user.nivel),
+                    rol: user.rol,
+                    medico: user.medico
+                },
+                token
+            });
         }
     )(req, res, next);
 });
+
 
 
 
