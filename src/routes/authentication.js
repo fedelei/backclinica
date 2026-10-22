@@ -44,7 +44,8 @@ router.post('/signupcl', (req, res, next) => {
                 usuario: user.usuario,
                 nivel: Number(user.nivel),
                 rol: user.rol,
-                medico: user.medico
+                medico: user.medico,
+                id_clinica: user.id_clinica
             };
 
             const token = jwt.sign(
@@ -59,9 +60,11 @@ router.post('/signupcl', (req, res, next) => {
                     id: Number(user.id),
                     usuario: user.usuario,
                     nombre: user.nombre,
+                    apellido: user.apellido,
                     nivel: Number(user.nivel),
                     rol: user.rol,
-                    medico: user.medico
+                    medico: user.medico,
+                    id_clinica: user.id_clinica
                 },
                 token
             });

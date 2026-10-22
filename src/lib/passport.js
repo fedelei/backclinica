@@ -75,11 +75,18 @@ passport.use(
         async (req, usuario, password, done) => {
             try {
                 // Recibir los datos del formulario
-                let { nombre, nivel, rol } = req.body;
+                let { nombre, nivel, rol, id_clinica, apellido } = req.body;
 
                 // Nivel predeterminado
                 if (nivel === undefined) {
                     nivel = 1;
+                }
+
+                // Validar que se proporcione id_clinica
+                if (!id_clinica) {
+                    return done(null, false, {
+                        message: "El campo id_clinica es obligatorio",
+                    });
                 }
 
                 // Determinar si es médico según el rol
@@ -101,17 +108,19 @@ passport.use(
                 const encryptedPassword =
                     await helpers.encryptPassword(password);
 
-                // Insertar usuario incluyendo el campo medico
+                // Insertar usuario incluyendo el campo medico e id_clinica
                 const result = await pool.query(
                     `INSERT INTO usuarios
-                    SET password = ?, usuario = ?, nombre = ?,
-                        nivel = ?, medico = ?`,
+                    SET password = ?, usuario = ?, nombre = ?, apellido = ?,
+                        nivel = ?, medico = ?, id_clinica = ?`,
                     [
                         encryptedPassword,
                         usuario,
                         nombre,
+                        apellido || null,
                         nivel,
                         medico,
+                        id_clinica,
                     ]
                 );
 
@@ -120,9 +129,11 @@ passport.use(
                     id: Number(result.insertId),
                     usuario,
                     nombre,
+                    apellido: apellido || null,
                     nivel: Number(nivel),
                     rol,
                     medico,
+                    id_clinica: Number(id_clinica),
                 };
 
                 return done(null, newUser);
