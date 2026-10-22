@@ -16,6 +16,8 @@ import jwt from "jsonwebtoken";
 
 
 
+
+
 //// Registro
 router.post('/signupcl', (req, res, next) => {
 
