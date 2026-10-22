@@ -434,11 +434,20 @@ router.post(
 
             const clinica = rowsClinica[0];
 
-            // Datos que contendrá el token
+            // Mapear nivel numérico a rol string para consistencia
+            let role = user.rol;
+            if (!role && user.nivel !== undefined) {
+                // Si no hay rol explícito, mapear nivel a rol
+                // Nivel 1 = administrativo, Nivel 2 = profesional
+                role = user.nivel === 2 ? 'profesional' : 'administrativo';
+            }
+
+            // Datos que contendrá el token (incluyendo rol normalizado)
             const userForToken = {
                 id: user.id,
                 usuario: user.usuario,
                 nivel: user.nivel,
+                rol: role,
                 id_clinica: user.id_clinica
             };
 
@@ -457,7 +466,7 @@ router.post(
                     username: user.usuario,
                     firstName: user.nombre,
                     lastName: user.apellido,
-                    role: user.rol ?? user.nivel,
+                    role: role,
                     professionalId: user.id_profesional ?? null
                 },
 
@@ -523,13 +532,21 @@ router.get('/auth/me', autenticarToken, async (req, res) => {
 
         const clinica = rowsClinica[0];
 
+        // Mapear nivel numérico a rol string para consistencia
+        let role = user.rol;
+        if (!role && user.nivel !== undefined) {
+            // Si no hay rol explícito, mapear nivel a rol
+            // Nivel 1 = administrativo, Nivel 2 = profesional
+            role = user.nivel === 2 ? 'profesional' : 'administrativo';
+        }
+
         return res.status(200).json({
             user: {
                 id: user.id,
                 username: user.usuario,
                 firstName: user.nombre,
                 lastName: user.apellido,
-                role: user.rol ?? user.nivel,
+                role: role,
                 professionalId: user.id_profesional ?? null
             },
 
