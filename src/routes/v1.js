@@ -685,7 +685,6 @@ router.get(
                     t.motivo AS reason,
                     u.nombre AS profFirstName,
                     u.apellido AS profLastName,
-                    e.nombre AS profSpecialty,
                     p.nombre AS firstName,
                     p.apellido AS lastName,
                     CONCAT(COALESCE(p.nombre, ''), ' ', COALESCE(p.apellido, '')) AS patientName,
@@ -695,13 +694,16 @@ router.get(
                     p.obra_social AS healthInsurance
                  FROM turnos t
                  LEFT JOIN usuarios u ON t.id_usuario = u.id
-                 LEFT JOIN especializacion esp ON esp.id_medico = u.id
-                 LEFT JOIN especialidades e ON e.id = esp.id_especialidad
                  LEFT JOIN pacientes p ON t.id_paciente = p.id
                  WHERE ${condiciones.join(' AND ')}
                  ORDER BY t.fecha ASC, t.hora ASC`,
                 parametros
             );
+
+            console.log('Turnos obtenidos:', turnos.length);
+            if (turnos.length > 0) {
+                console.log('Primer turno:', turnos[0]);
+            }
 
             // Convertir BigInt a string para evitar errores de JSON
             const turnosJSON = turnos.map((turno) =>
@@ -2064,7 +2066,6 @@ router.get(
             t.motivo AS reason,
             u.nombre AS profFirstName,
             u.apellido AS profLastName,
-            e.nombre AS profSpecialty,
             p.nombre AS firstName,
             p.apellido AS lastName,
             CONCAT(COALESCE(p.nombre, ''), ' ', COALESCE(p.apellido, '')) AS patientName,
@@ -2074,8 +2075,6 @@ router.get(
             p.obra_social AS healthInsurance
          FROM turnos t
          LEFT JOIN usuarios u ON t.id_usuario = u.id
-         LEFT JOIN especializacion esp ON esp.id_medico = u.id
-         LEFT JOIN especialidades e ON e.id = esp.id_especialidad
          LEFT JOIN pacientes p ON t.id_paciente = p.id
          WHERE t.id_clinica = ?
            AND t.id_usuario = ?
