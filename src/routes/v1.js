@@ -683,6 +683,9 @@ router.get(
                     t.id_paciente AS patientId,
                     t.estado AS status,
                     t.motivo AS reason,
+                    u.nombre AS profFirstName,
+                    u.apellido AS profLastName,
+                    e.nombre AS profSpecialty,
                     p.nombre AS firstName,
                     p.apellido AS lastName,
                     CONCAT(COALESCE(p.nombre, ''), ' ', COALESCE(p.apellido, '')) AS patientName,
@@ -691,6 +694,9 @@ router.get(
                     p.telefono AS patientPhone,
                     p.obra_social AS healthInsurance
                  FROM turnos t
+                 LEFT JOIN usuarios u ON t.id_usuario = u.id
+                 LEFT JOIN especializacion esp ON esp.id_medico = u.id
+                 LEFT JOIN especialidades e ON e.id = esp.id_especialidad
                  LEFT JOIN pacientes p ON t.id_paciente = p.id
                  WHERE ${condiciones.join(' AND ')}
                  ORDER BY t.fecha ASC, t.hora ASC`,
@@ -2056,6 +2062,9 @@ router.get(
             t.id_paciente AS patientId,
             t.estado AS status,
             t.motivo AS reason,
+            u.nombre AS profFirstName,
+            u.apellido AS profLastName,
+            e.nombre AS profSpecialty,
             p.nombre AS firstName,
             p.apellido AS lastName,
             CONCAT(COALESCE(p.nombre, ''), ' ', COALESCE(p.apellido, '')) AS patientName,
@@ -2064,6 +2073,9 @@ router.get(
             p.telefono AS patientPhone,
             p.obra_social AS healthInsurance
          FROM turnos t
+         LEFT JOIN usuarios u ON t.id_usuario = u.id
+         LEFT JOIN especializacion esp ON esp.id_medico = u.id
+         LEFT JOIN especialidades e ON e.id = esp.id_especialidad
          LEFT JOIN pacientes p ON t.id_paciente = p.id
          WHERE t.id_clinica = ?
            AND t.id_usuario = ?
