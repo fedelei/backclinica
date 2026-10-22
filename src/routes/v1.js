@@ -679,8 +679,19 @@ router.get(
                     t.id_clinica AS clinicId,
                     t.id_usuario AS professionalId,
                     t.fecha AS date,
-                    TIME_FORMAT(t.hora, '%H:%i') AS time
+                    TIME_FORMAT(t.hora, '%H:%i') AS time,
+                    t.id_paciente AS patientId,
+                    t.estado AS status,
+                    t.motivo AS reason,
+                    p.nombre AS firstName,
+                    p.apellido AS lastName,
+                    CONCAT(COALESCE(p.nombre, ''), ' ', COALESCE(p.apellido, '')) AS patientName,
+                    p.dni AS patientDni,
+                    p.email AS patientEmail,
+                    p.telefono AS patientPhone,
+                    p.obra_social AS healthInsurance
                  FROM turnos t
+                 LEFT JOIN pacientes p ON t.id_paciente = p.id
                  WHERE ${condiciones.join(' AND ')}
                  ORDER BY t.fecha ASC, t.hora ASC`,
                 parametros
@@ -2041,8 +2052,19 @@ router.get(
             t.id_clinica AS clinicId,
             t.id_usuario AS professionalId,
             t.fecha AS date,
-            TIME_FORMAT(t.hora, '%H:%i') AS time
+            TIME_FORMAT(t.hora, '%H:%i') AS time,
+            t.id_paciente AS patientId,
+            t.estado AS status,
+            t.motivo AS reason,
+            p.nombre AS firstName,
+            p.apellido AS lastName,
+            CONCAT(COALESCE(p.nombre, ''), ' ', COALESCE(p.apellido, '')) AS patientName,
+            p.dni AS patientDni,
+            p.email AS patientEmail,
+            p.telefono AS patientPhone,
+            p.obra_social AS healthInsurance
          FROM turnos t
+         LEFT JOIN pacientes p ON t.id_paciente = p.id
          WHERE t.id_clinica = ?
            AND t.id_usuario = ?
          ORDER BY t.fecha ASC, t.hora ASC`,
