@@ -3197,8 +3197,14 @@ router.post(
 
     } catch (error) {
       console.error('Error al crear excepción de horario:', error);
+      console.error('Detalles del error:', {
+        code: error.code,
+        sqlMessage: error.sqlMessage,
+        sqlState: error.sqlState
+      });
       return res.status(500).json({
-        message: 'Error al crear la excepción de horario'
+        message: 'Error al crear la excepción de horario',
+        error: error.sqlMessage || error.message
       });
     }
   }
@@ -3267,6 +3273,39 @@ router.delete(
     }
   }
 );
+
+/**
+ * Verifica si las tablas de horarios existen (endpoint de diagnóstico)
+ *
+ * GET /v1/sistema/horarios-check
+ *
+ * @returns {Promise<{horarios_base: boolean, horarios_excepciones: boolean}>}
+ */
+router.get('/sistema/horarios-check', async (req, res) => {
+  try {
+    const [baseTable] = await pool.query(
+      `SELECT COUNT(*) as count FROM information_schema.tables
+       WHERE table_schema = DATABASE()
+       AND table_name = 'horarios_base'`
+    );
+
+    const [excepcionesTable] = await pool.query(
+      `SELECT COUNT(*) as count FROM information_schema.tables
+       WHERE table_schema = DATABASE()
+       AND table_name = 'horarios_excepciones'`
+    );
+
+    return res.status(200).json({
+      horarios_base: baseTable.count > 0,
+      horarios_excepciones: excepcionesTable.count > 0
+    });
+  } catch (error) {
+    console.error('Error al verificar tablas:', error);
+    return res.status(500).json({
+      message: 'Error al verificar tablas de horarios'
+    });
+  }
+});
 
 /**
  * Obtiene la disponibilidad real de un profesional para una fecha específica.
