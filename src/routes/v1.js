@@ -203,7 +203,7 @@ router.get('/profesionales', async (req, res) => {
 
 
 
-////http://localhost:4000/vl/profesionales/2/fechas-disponibles?mes=2026-10 
+////http://localhost:4000/vl/profesionales/2/fechas-disponibles?mes=2026-10
 router.get('/profesionales/:profesionalId/fechas-disponibles', async (req, res) => {
   try {
     const { profesionalId } = req.params;
@@ -215,16 +215,20 @@ router.get('/profesionales/:profesionalId/fechas-disponibles', async (req, res) 
       });
     }
 
-    // Obtener los días de atención del profesional
-    const horarios = await pool.query(
+    // Obtener la configuración base del profesional (nuevo sistema)
+    const horariosBase = await pool.query(
       `SELECT DISTINCT dia
-       FROM horarios
-       WHERE usuario_id = ?`,
+       FROM horarios_base
+       WHERE usuario_id = ? AND activo = true`,
       [profesionalId]
     );
 
+    // Si tiene configuración personal, usar esos días
+    // Si no, usar configuración por defecto: Lunes-Viernes (1-5)
     const diasLaborales = new Set(
-      horarios.map(h => Number(h.dia))
+      horariosBase.length > 0
+        ? horariosBase.map(h => Number(h.dia))
+        : [1, 2, 3, 4, 5] // L-V por defecto
     );
 
     const [anio, numeroMes] = mes.split('-').map(Number);
@@ -287,41 +291,106 @@ router.get(
         ? 7
         : fechaSeleccionada.getDay();
 
-      // Horarios de atención del profesional
-      const horarios = await pool.query(
-        `SELECT hora_inicio
-         FROM horarios
-         WHERE usuario_id = ?
-           AND dia = ?
-         ORDER BY hora_inicio`,
+      // Obtener configuración base del profesional (nuevo sistema)
+      const horariosBase = await pool.query(
+        `SELECT hora_inicio, hora_fin, duracion
+         FROM horarios_base
+         WHERE usuario_id = ? AND dia = ? AND activo = true
+         LIMIT 1`,
         [profesionalId, diaSemana]
       );
 
-      // Turnos del profesional para la fecha seleccionada
-      const turnos = await pool.query(
-        `SELECT hora
-         FROM turnos
-         WHERE id_usuario = ?
-           AND fecha = ?`,
+      // Si no tiene configuración personal, usar configuración por defecto: L-V 8-18, 30 min
+      let horarioConfig = horariosBase[0];
+      if (!horarioConfig && diaSemana >= 1 && diaSemana <= 5) {
+        horarioConfig = {
+          hora_inicio: '08:00:00',
+          hora_fin: '18:00:00',
+          duracion: 30
+        };
+      }
+
+      // Si no hay configuración para este día (sábado/domingo sin config personal)
+      if (!horarioConfig) {
+        return res.status(200).json([]);
+      }
+
+      // Generar slots de tiempo basados en la configuración
+      const slots = [];
+      let [horaInicio, minutoInicio] = horarioConfig.hora_inicio.split(':').map(Number);
+      const [horaFin, minutoFin] = horarioConfig.hora_fin.split(':').map(Number);
+      const duracion = horarioConfig.duracion;
+
+      while (true) {
+        const horaActual = horaInicio * 60 + minutoInicio;
+        const horaFinMinutos = horaFin * 60 + minutoFin;
+
+        if (horaActual >= horaFinMinutos) break;
+
+        const horaStr = `${String(horaInicio).padStart(2, '0')}:${String(minutoInicio).padStart(2, '0')}`;
+        slots.push({
+          horario: horaStr,
+          disponible: true
+        });
+
+        // Avanzar duración
+        minutoInicio += duracion;
+        while (minutoInicio >= 60) {
+          minutoInicio -= 60;
+          horaInicio++;
+        }
+      }
+
+      // Obtener excepciones para esta fecha (nuevo sistema)
+      const excepciones = await pool.query(
+        `SELECT hora_inicio, hora_fin
+         FROM horarios_excepciones
+         WHERE usuario_id = ? AND fecha = ?`,
         [profesionalId, fecha]
       );
 
-      // Identificar las horas ocupadas
-      const horariosOcupados = new Set(
-        turnos.map(t => String(t.hora).slice(0, 5))
+      // Obtener turnos ya reservados
+      const turnos = await pool.query(
+        `SELECT hora
+         FROM turnos
+         WHERE id_usuario = ? AND fecha = ? AND estado != 'cancelado'`,
+        [profesionalId, fecha]
       );
 
-      // Devolver horario y disponibilidad
-      const horariosDisponibles = horarios.map(h => {
-        const horario = String(h.hora_inicio).slice(0, 5);
+      // Marcar slots no disponibles
+      const turnosOcupados = new Set(turnos.map(t => t.hora.slice(0, 5)));
 
-        return {
-          horario,
-          disponible: !horariosOcupados.has(horario)
-        };
+      for (const exc of excepciones) {
+        // Bloqueo total del día
+        if (!exc.hora_inicio && !exc.hora_fin) {
+          slots.forEach(s => {
+            s.disponible = false;
+          });
+          break;
+        }
+
+        // Bloqueo parcial
+        const horaInicioExc = exc.hora_inicio.slice(0, 5);
+        const horaFinExc = exc.hora_fin ? exc.hora_fin.slice(0, 5) : null;
+
+        slots.forEach(s => {
+          if (!s.disponible) return;
+
+          // Verificar si el slot está dentro del rango bloqueado
+          if (s.horario >= horaInicioExc && (!horaFinExc || s.horario < horaFinExc)) {
+            s.disponible = false;
+          }
+        });
+      }
+
+      // Marcar turnos ocupados
+      slots.forEach(s => {
+        if (turnosOcupados.has(s.horario)) {
+          s.disponible = false;
+        }
       });
 
-      return res.status(200).json(horariosDisponibles);
+      return res.status(200).json(slots);
 
     } catch (error) {
       console.error('Error al obtener horarios disponibles:', error);
