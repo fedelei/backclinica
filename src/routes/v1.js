@@ -231,12 +231,38 @@ router.get('/profesionales/:profesionalId/fechas-disponibles', async (req, res) 
         : [1, 2, 3, 4, 5] // L-V por defecto
     );
 
+    // Obtener excepciones para el mes (bloqueos totales del día)
     const [anio, numeroMes] = mes.split('-').map(Number);
+    const primerDiaMes = `${anio}-${String(numeroMes).padStart(2, '0')}-01`;
+    const ultimoDiaMes = `${anio}-${String(numeroMes).padStart(2, '0')}-31`;
+
+    const excepciones = await pool.query(
+      `SELECT fecha
+       FROM horarios_excepciones
+       WHERE usuario_id = ?
+         AND fecha >= ?
+         AND fecha <= ?
+         AND (hora_inicio IS NULL OR hora_fin IS NULL)`,
+      [profesionalId, primerDiaMes, ultimoDiaMes]
+    );
+
+    // Crear set de fechas bloqueadas
+    const fechasBloqueadas = new Set(
+      excepciones.map(e => e.fecha)
+    );
+
     const ultimoDia = new Date(anio, numeroMes, 0).getDate();
 
     const fechasDisponibles = [];
 
     for (let dia = 1; dia <= ultimoDia; dia++) {
+      const fechaStr = `${anio}-${String(numeroMes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+
+      // Si la fecha está bloqueada por una excepción, no incluirla
+      if (fechasBloqueadas.has(fechaStr)) {
+        continue;
+      }
+
       const fecha = new Date(anio, numeroMes - 1, dia);
 
       // Lunes = 1, martes = 2, ..., domingo = 7
@@ -245,9 +271,7 @@ router.get('/profesionales/:profesionalId/fechas-disponibles', async (req, res) 
         : fecha.getDay();
 
       if (diasLaborales.has(diaSemana)) {
-        fechasDisponibles.push(
-          `${anio}-${String(numeroMes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`
-        );
+        fechasDisponibles.push(fechaStr);
       }
     }
 
