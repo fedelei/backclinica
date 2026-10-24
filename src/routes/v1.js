@@ -459,7 +459,7 @@ router.post('/turnos', async (req, res) => {
     return res.status(201).json({
       exito: true,
       mensaje: 'Turno reservado exitosamente',
-      idTurno: resultado.insertId,
+      idTurno: Number(resultado.insertId),
       estado: 'CONFIRMADO',
       fechaCreacion: new Date().toISOString()
     });
@@ -3204,7 +3204,7 @@ router.post(
       return res.status(201).json({
         success: true,
         message: 'Excepción de horario creada correctamente',
-        id: resultado.insertId
+        id: Number(resultado.insertId)
       });
 
     } catch (error) {
