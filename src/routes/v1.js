@@ -3070,6 +3070,8 @@ router.get(
       const { professionalId } = req.params;
       const { fecha_desde, fecha_hasta } = req.query;
 
+      console.log('GET excepciones - professionalId:', professionalId, 'req.user:', req.user);
+
       if (!/^\d+$/.test(professionalId)) {
         return res.status(400).json({
           message: 'professionalId inválido'
@@ -3081,6 +3083,8 @@ router.get(
       const rol = String(req.user.rol ?? req.user.nivel ?? '').toLowerCase();
       const esAdministrativo = ['administrativo', 'admin'].includes(rol) || ['1', '10'].includes(rol);
       const esPropioProfesional = usuarioId === String(professionalId);
+
+      console.log('Autorización:', { usuarioId, professionalId, rol, esAdministrativo, esPropioProfesional });
 
       if (!esAdministrativo && !esPropioProfesional) {
         return res.status(403).json({
@@ -3108,12 +3112,20 @@ router.get(
 
       const excepciones = await pool.query(query, params);
 
+      console.log('Excepciones recuperadas:', excepciones.length);
+
       return res.status(200).json(excepciones);
 
     } catch (error) {
       console.error('Error al obtener excepciones de horarios:', error);
+      console.error('Detalles:', {
+        code: error.code,
+        sqlMessage: error.sqlMessage,
+        sqlState: error.sqlState
+      });
       return res.status(500).json({
-        message: 'Error al obtener las excepciones de horarios'
+        message: 'Error al obtener las excepciones de horarios',
+        error: error.sqlMessage || error.message
       });
     }
   }
@@ -3202,6 +3214,15 @@ router.post(
         sqlMessage: error.sqlMessage,
         sqlState: error.sqlState
       });
+
+      // Si la tabla no existe, dar un mensaje más claro
+      if (error.code === 'ER_NO_SUCH_TABLE') {
+        return res.status(500).json({
+          message: 'La tabla horarios_excepciones no existe. Ejecuta el script SQL: create_horarios_tables.sql',
+          error: error.sqlMessage
+        });
+      }
+
       return res.status(500).json({
         message: 'Error al crear la excepción de horario',
         error: error.sqlMessage || error.message
