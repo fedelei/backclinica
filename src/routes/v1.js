@@ -17,6 +17,7 @@ import jwt from "jsonwebtoken";
 
 import {
     autenticarToken,
+    autenticarTokenOpcional,
     obtenerHashToken
 } from "../middlewares/autenticarToken.js";
 
@@ -146,7 +147,9 @@ http://localhost:4000/vl/profesionales?clinicaId=2&especialidad=Dermatologia
 
 
 ////http://localhost:4000/vl/profesionales?clinicaId=2&especialidad=Cardiologia
-router.get('/profesionales', autenticarToken, async (req, res) => {
+//// Endpoint público — parte del flujo de solicitud de turnos (pacientes sin auth).
+//// El equivalente autenticado para admin es GET /v1/clinicas/:clinicId/profesionales.
+router.get('/profesionales', async (req, res) => {
   try {
     const { clinicaId, especialidad } = req.query;
 
@@ -200,7 +203,7 @@ router.get('/profesionales', autenticarToken, async (req, res) => {
 
 
 
-////http://localhost:4000/vl/profesionales/2/fechas-disponibles?mes=2026-10 
+////http://localhost:4000/vl/profesionales/2/fechas-disponibles?mes=2026-10
 router.get('/profesionales/:profesionalId/fechas-disponibles', async (req, res) => {
   try {
     const { profesionalId } = req.params;
@@ -212,24 +215,54 @@ router.get('/profesionales/:profesionalId/fechas-disponibles', async (req, res) 
       });
     }
 
-    // Obtener los días de atención del profesional
-    const horarios = await pool.query(
+    // Obtener la configuración base del profesional (nuevo sistema)
+    const horariosBase = await pool.query(
       `SELECT DISTINCT dia
-       FROM horarios
-       WHERE usuario_id = ?`,
+       FROM horarios_base
+       WHERE usuario_id = ? AND activo = true`,
       [profesionalId]
     );
 
+    // Si tiene configuración personal, usar esos días
+    // Si no, usar configuración por defecto: Lunes-Viernes (1-5)
     const diasLaborales = new Set(
-      horarios.map(h => Number(h.dia))
+      horariosBase.length > 0
+        ? horariosBase.map(h => Number(h.dia))
+        : [1, 2, 3, 4, 5] // L-V por defecto
     );
 
+    // Obtener excepciones para el mes (bloqueos totales del día)
     const [anio, numeroMes] = mes.split('-').map(Number);
+    const primerDiaMes = `${anio}-${String(numeroMes).padStart(2, '0')}-01`;
+    const ultimoDiaMes = `${anio}-${String(numeroMes).padStart(2, '0')}-31`;
+
+    const excepciones = await pool.query(
+      `SELECT fecha
+       FROM horarios_excepciones
+       WHERE usuario_id = ?
+         AND fecha >= ?
+         AND fecha <= ?
+         AND (hora_inicio IS NULL OR hora_fin IS NULL)`,
+      [profesionalId, primerDiaMes, ultimoDiaMes]
+    );
+
+    // Crear set de fechas bloqueadas
+    const fechasBloqueadas = new Set(
+      excepciones.map(e => e.fecha)
+    );
+
     const ultimoDia = new Date(anio, numeroMes, 0).getDate();
 
     const fechasDisponibles = [];
 
     for (let dia = 1; dia <= ultimoDia; dia++) {
+      const fechaStr = `${anio}-${String(numeroMes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`;
+
+      // Si la fecha está bloqueada por una excepción, no incluirla
+      if (fechasBloqueadas.has(fechaStr)) {
+        continue;
+      }
+
       const fecha = new Date(anio, numeroMes - 1, dia);
 
       // Lunes = 1, martes = 2, ..., domingo = 7
@@ -238,9 +271,7 @@ router.get('/profesionales/:profesionalId/fechas-disponibles', async (req, res) 
         : fecha.getDay();
 
       if (diasLaborales.has(diaSemana)) {
-        fechasDisponibles.push(
-          `${anio}-${String(numeroMes).padStart(2, '0')}-${String(dia).padStart(2, '0')}`
-        );
+        fechasDisponibles.push(fechaStr);
       }
     }
 
@@ -284,41 +315,106 @@ router.get(
         ? 7
         : fechaSeleccionada.getDay();
 
-      // Horarios de atención del profesional
-      const horarios = await pool.query(
-        `SELECT hora_inicio
-         FROM horarios
-         WHERE usuario_id = ?
-           AND dia = ?
-         ORDER BY hora_inicio`,
+      // Obtener configuración base del profesional (nuevo sistema)
+      const horariosBase = await pool.query(
+        `SELECT hora_inicio, hora_fin, duracion
+         FROM horarios_base
+         WHERE usuario_id = ? AND dia = ? AND activo = true
+         LIMIT 1`,
         [profesionalId, diaSemana]
       );
 
-      // Turnos del profesional para la fecha seleccionada
-      const turnos = await pool.query(
-        `SELECT hora
-         FROM turnos
-         WHERE id_usuario = ?
-           AND fecha = ?`,
+      // Si no tiene configuración personal, usar configuración por defecto: L-V 8-18, 30 min
+      let horarioConfig = horariosBase[0];
+      if (!horarioConfig && diaSemana >= 1 && diaSemana <= 5) {
+        horarioConfig = {
+          hora_inicio: '08:00:00',
+          hora_fin: '18:00:00',
+          duracion: 30
+        };
+      }
+
+      // Si no hay configuración para este día (sábado/domingo sin config personal)
+      if (!horarioConfig) {
+        return res.status(200).json([]);
+      }
+
+      // Generar slots de tiempo basados en la configuración
+      const slots = [];
+      let [horaInicio, minutoInicio] = horarioConfig.hora_inicio.split(':').map(Number);
+      const [horaFin, minutoFin] = horarioConfig.hora_fin.split(':').map(Number);
+      const duracion = horarioConfig.duracion;
+
+      while (true) {
+        const horaActual = horaInicio * 60 + minutoInicio;
+        const horaFinMinutos = horaFin * 60 + minutoFin;
+
+        if (horaActual >= horaFinMinutos) break;
+
+        const horaStr = `${String(horaInicio).padStart(2, '0')}:${String(minutoInicio).padStart(2, '0')}`;
+        slots.push({
+          horario: horaStr,
+          disponible: true
+        });
+
+        // Avanzar duración
+        minutoInicio += duracion;
+        while (minutoInicio >= 60) {
+          minutoInicio -= 60;
+          horaInicio++;
+        }
+      }
+
+      // Obtener excepciones para esta fecha (nuevo sistema)
+      const excepciones = await pool.query(
+        `SELECT hora_inicio, hora_fin
+         FROM horarios_excepciones
+         WHERE usuario_id = ? AND fecha = ?`,
         [profesionalId, fecha]
       );
 
-      // Identificar las horas ocupadas
-      const horariosOcupados = new Set(
-        turnos.map(t => String(t.hora).slice(0, 5))
+      // Obtener turnos ya reservados
+      const turnos = await pool.query(
+        `SELECT hora
+         FROM turnos
+         WHERE id_usuario = ? AND fecha = ? AND estado != 'cancelado'`,
+        [profesionalId, fecha]
       );
 
-      // Devolver horario y disponibilidad
-      const horariosDisponibles = horarios.map(h => {
-        const horario = String(h.hora_inicio).slice(0, 5);
+      // Marcar slots no disponibles
+      const turnosOcupados = new Set(turnos.map(t => t.hora.slice(0, 5)));
 
-        return {
-          horario,
-          disponible: !horariosOcupados.has(horario)
-        };
+      for (const exc of excepciones) {
+        // Bloqueo total del día
+        if (!exc.hora_inicio && !exc.hora_fin) {
+          slots.forEach(s => {
+            s.disponible = false;
+          });
+          break;
+        }
+
+        // Bloqueo parcial
+        const horaInicioExc = exc.hora_inicio.slice(0, 5);
+        const horaFinExc = exc.hora_fin ? exc.hora_fin.slice(0, 5) : null;
+
+        slots.forEach(s => {
+          if (!s.disponible) return;
+
+          // Verificar si el slot está dentro del rango bloqueado
+          if (s.horario >= horaInicioExc && (!horaFinExc || s.horario < horaFinExc)) {
+            s.disponible = false;
+          }
+        });
+      }
+
+      // Marcar turnos ocupados
+      slots.forEach(s => {
+        if (turnosOcupados.has(s.horario)) {
+          s.disponible = false;
+        }
       });
 
-      return res.status(200).json(horariosDisponibles);
+      return res.status(200).json(slots);
 
     } catch (error) {
       console.error('Error al obtener horarios disponibles:', error);
@@ -387,7 +483,7 @@ router.post('/turnos', async (req, res) => {
     return res.status(201).json({
       exito: true,
       mensaje: 'Turno reservado exitosamente',
-      idTurno: resultado.insertId,
+      idTurno: Number(resultado.insertId),
       estado: 'CONFIRMADO',
       fechaCreacion: new Date().toISOString()
     });
@@ -431,11 +527,20 @@ router.post(
 
             const clinica = rowsClinica[0];
 
-            // Datos que contendrá el token
+            // Mapear nivel numérico a rol string para consistencia
+            let role = user.rol;
+            if (!role && user.nivel !== undefined) {
+                // Si no hay rol explícito, mapear nivel a rol
+                // Nivel 1 = administrativo, Nivel 2 = profesional
+                role = user.nivel === 2 ? 'profesional' : 'administrativo';
+            }
+
+            // Datos que contendrá el token (incluyendo rol normalizado)
             const userForToken = {
                 id: user.id,
                 usuario: user.usuario,
                 nivel: user.nivel,
+                rol: role,
                 id_clinica: user.id_clinica
             };
 
@@ -454,7 +559,7 @@ router.post(
                     username: user.usuario,
                     firstName: user.nombre,
                     lastName: user.apellido,
-                    role: user.rol ?? user.nivel,
+                    role: role,
                     professionalId: user.id_profesional ?? null
                 },
 
@@ -520,13 +625,21 @@ router.get('/auth/me', autenticarToken, async (req, res) => {
 
         const clinica = rowsClinica[0];
 
+        // Mapear nivel numérico a rol string para consistencia
+        let role = user.rol;
+        if (!role && user.nivel !== undefined) {
+            // Si no hay rol explícito, mapear nivel a rol
+            // Nivel 1 = administrativo, Nivel 2 = profesional
+            role = user.nivel === 2 ? 'profesional' : 'administrativo';
+        }
+
         return res.status(200).json({
             user: {
                 id: user.id,
                 username: user.usuario,
                 firstName: user.nombre,
                 lastName: user.apellido,
-                role: user.rol ?? user.nivel,
+                role: role,
                 professionalId: user.id_profesional ?? null
             },
 
@@ -659,12 +772,31 @@ router.get(
                     t.id_clinica AS clinicId,
                     t.id_usuario AS professionalId,
                     t.fecha AS date,
-                    TIME_FORMAT(t.hora, '%H:%i') AS time
+                    TIME_FORMAT(t.hora, '%H:%i') AS time,
+                    t.id_paciente AS patientId,
+                    t.estado AS status,
+                    t.motivo AS reason,
+                    u.nombre AS profFirstName,
+                    u.apellido AS profLastName,
+                    p.nombre AS firstName,
+                    p.apellido AS lastName,
+                    CONCAT(COALESCE(p.nombre, ''), ' ', COALESCE(p.apellido, '')) AS patientName,
+                    p.dni AS patientDni,
+                    p.email AS patientEmail,
+                    p.telefono AS patientPhone,
+                    p.obra_social AS healthInsurance
                  FROM turnos t
+                 LEFT JOIN usuarios u ON t.id_usuario = u.id
+                 LEFT JOIN pacientes p ON t.id_paciente = p.id
                  WHERE ${condiciones.join(' AND ')}
                  ORDER BY t.fecha ASC, t.hora ASC`,
                 parametros
             );
+
+            console.log('Turnos obtenidos:', turnos.length);
+            if (turnos.length > 0) {
+                console.log('Primer turno:', turnos[0]);
+            }
 
             // Convertir BigInt a string para evitar errores de JSON
             const turnosJSON = turnos.map((turno) =>
@@ -696,150 +828,228 @@ router.get(
 
 
 
-router.post(
-    '/turnos',
-    autenticarToken,
-    async (req, res) => {
-        let conexion;
+/**
+ * Crea un turno (wizard público o panel).
+ * - Sin JWT: reserva pública (paciente online).
+ * - Con JWT: exige que la clínica del token coincida con clinicId.
+ * Upsert de paciente por DNI+clínica e INSERT con id_paciente.
+ */
+async function crearTurnoHandler(req, res) {
+    let conexion;
 
-        try {
-            const {
-                clinicId,
-                professionalId,
-                patientId,
-                date,
-                time,
-                status = 'confirmado',
-                reason,
-                patientName,
-                patientDni,
-                patientEmail,
-                patientPhone,
-                healthInsurance
-            } = req.body;
-            // Validar datos obligatorios
-            console.log('Datos recibidos para crear turno:');
-            console.log('Datos recibidos para crear turno:',  clinicId ,professionalId ,date,time ,patientName,patientDni);
+    try {
+        const {
+            clinicId,
+            professionalId,
+            date,
+            time,
+            status: statusBody,
+            reason,
+            patientName,
+            patientDni,
+            patientEmail,
+            patientPhone,
+            healthInsurance
+        } = req.body;
 
-            if (
-                !clinicId ||
-                !professionalId ||
-                !date ||
-                !time ||
-                !patientName ||
-                !patientDni
-            ) {
-                return res.status(400).json({
-                    message: 'Faltan datos obligatorios del turno o del paciente'
-                });
-            }
+        // Panel autenticado → confirmado por defecto; wizard público → pendiente
+        const status = statusBody
+            ?? (req.user ? 'confirmado' : 'pendiente');
 
-            if (
-                !/^\d+$/.test(String(clinicId)) ||
-                !/^\d+$/.test(String(professionalId))
-            ) {
-                return res.status(400).json({
-                    message: 'clinicId o professionalId inválido'
-                });
-            }
-
-            if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
-                return res.status(400).json({
-                    message: 'La fecha debe tener formato YYYY-MM-DD'
-                });
-            }
-
-            if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
-                return res.status(400).json({
-                    message: 'El horario debe tener formato HH:mm'
-                });
-            }
-
-            if (!['confirmado', 'pendiente', 'cancelado'].includes(status)) {
-                return res.status(400).json({
-                    message: 'Estado de turno inválido'
-                });
-            }
-
-            // Validación básica de acceso a la clínica
-            if (
-                Number(req.user.id_clinica) !== Number(clinicId)
-            ) {
-                return res.status(403).json({
-                    message: 'No tenés acceso a esta clínica'
-                });
-            }
-
-            conexion = await pool.getConnection();
-            await conexion.beginTransaction();
-
-            // Comprobar si ya existe un turno en ese horario.
-            // Esta consulta supone que id_clinica existe en turnos.
-            const duplicados
-             = await conexion.query(
-                `SELECT id
-                 FROM turnos
-                 WHERE id_clinica = ?
-                   AND id_usuario = ?
-                   AND fecha = ?
-                   AND hora = ?
-                 LIMIT 1
-                 FOR UPDATE`,
-                [clinicId, professionalId, date, time]
-            );
-
-            if (duplicados.length > 0) {
-                await conexion.rollback();
-
-                return res.status(409).json({
-                    message: 'El profesional ya tiene un turno en esa fecha y horario'
-                });
-            }
-
-            // Crear el turno con las columnas conocidas.
-            const resultado = await conexion.query(
-                `INSERT INTO turnos
-                    (id_clinica, id_usuario, fecha, hora)
-                 VALUES (?, ?, ?, ?)`,
-                [clinicId, professionalId, date, time]
-            );
-
-            await conexion.commit();
-
-            return res.status(201).json({
-                id: resultado.insertId.toString(),
-                clinicId: String(clinicId),
-                professionalId: String(professionalId),
-                patientId: patientId ?? null,
-                date,
-                time,
-                status,
-                reason: reason ?? null,
-                patientName,
-                patientDni,
-                patientEmail: patientEmail ?? null,
-                patientPhone: patientPhone ?? null,
-                healthInsurance: healthInsurance ?? null
+        if (
+            !clinicId ||
+            !professionalId ||
+            !date ||
+            !time ||
+            !patientName ||
+            !patientDni
+        ) {
+            return res.status(400).json({
+                message: 'Faltan datos obligatorios del turno o del paciente'
             });
+        }
 
-        } catch (error) {
-            if (conexion) {
-                await conexion.rollback();
-            }
-
-            console.error('Error al crear turno:', error);
-
-            return res.status(500).json({
-                message: 'Error al crear el turno'
+        if (
+            !/^\d+$/.test(String(clinicId)) ||
+            !/^\d+$/.test(String(professionalId))
+        ) {
+            return res.status(400).json({
+                message: 'clinicId o professionalId inválido'
             });
+        }
 
-        } finally {
-            if (conexion) {
-                conexion.release();
-            }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+            return res.status(400).json({
+                message: 'La fecha debe tener formato YYYY-MM-DD'
+            });
+        }
+
+        if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(time)) {
+            return res.status(400).json({
+                message: 'El horario debe tener formato HH:mm'
+            });
+        }
+
+        if (!['confirmado', 'pendiente', 'cancelado'].includes(status)) {
+            return res.status(400).json({
+                message: 'Estado de turno inválido'
+            });
+        }
+
+        // Si hay sesión de panel, restringir a su clínica
+        if (
+            req.user &&
+            Number(req.user.id_clinica) !== Number(clinicId)
+        ) {
+            return res.status(403).json({
+                message: 'No tenés acceso a esta clínica'
+            });
+        }
+
+        const nameParts = String(patientName).trim().split(/\s+/);
+        const nombre = nameParts[0] || String(patientName).trim();
+        const apellido = nameParts.slice(1).join(' ') || nombre;
+
+        conexion = await pool.getConnection();
+        await conexion.beginTransaction();
+
+        const profesionales = await conexion.query(
+            `SELECT u.id
+             FROM usuarios u
+             INNER JOIN trabajo t
+               ON CAST(t.id_usuario AS CHAR) COLLATE utf8mb4_general_ci =
+                  CAST(u.id AS CHAR) COLLATE utf8mb4_general_ci
+             WHERE u.id = ?
+               AND t.id_clinica = ?
+               AND u.medico = 'Si'
+             LIMIT 1`,
+            [professionalId, clinicId]
+        );
+
+        if (profesionales.length === 0) {
+            await conexion.rollback();
+            return res.status(400).json({
+                message: 'El profesional no pertenece a la clínica indicada'
+            });
+        }
+
+        const pacientesExistentes = await conexion.query(
+            `SELECT id
+             FROM pacientes
+             WHERE dni = ?
+               AND id_clinica = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [String(patientDni), clinicId]
+        );
+
+        let resolvedPatientId;
+
+        if (pacientesExistentes.length > 0) {
+            resolvedPatientId = pacientesExistentes[0].id;
+
+            await conexion.query(
+                `UPDATE pacientes
+                 SET nombre = ?,
+                     apellido = ?,
+                     email = COALESCE(?, email),
+                     telefono = COALESCE(?, telefono),
+                     obra_social = COALESCE(?, obra_social)
+                 WHERE id = ?`,
+                [
+                    nombre,
+                    apellido,
+                    patientEmail || null,
+                    patientPhone || null,
+                    healthInsurance || null,
+                    resolvedPatientId
+                ]
+            );
+        } else {
+            const nuevoPaciente = await conexion.query(
+                `INSERT INTO pacientes
+                    (nombre, apellido, dni, email, telefono, obra_social, id_clinica)
+                 VALUES (?, ?, ?, ?, ?, ?, ?)`,
+                [
+                    nombre,
+                    apellido,
+                    String(patientDni),
+                    patientEmail || null,
+                    patientPhone || null,
+                    healthInsurance || null,
+                    clinicId
+                ]
+            );
+            resolvedPatientId = nuevoPaciente.insertId;
+        }
+
+        const duplicados = await conexion.query(
+            `SELECT id
+             FROM turnos
+             WHERE id_clinica = ?
+               AND id_usuario = ?
+               AND fecha = ?
+               AND hora = ?
+             LIMIT 1
+             FOR UPDATE`,
+            [clinicId, professionalId, date, time]
+        );
+
+        if (duplicados.length > 0) {
+            await conexion.rollback();
+            return res.status(409).json({
+                message: 'El profesional ya tiene un turno en esa fecha y horario'
+            });
+        }
+
+        const resultado = await conexion.query(
+            `INSERT INTO turnos
+                (id_clinica, id_usuario, fecha, hora, id_paciente, estado)
+             VALUES (?, ?, ?, ?, ?, ?)`,
+            [clinicId, professionalId, date, time, resolvedPatientId, status]
+        );
+
+        await conexion.commit();
+
+        return res.status(201).json({
+            id: resultado.insertId.toString(),
+            clinicId: String(clinicId),
+            professionalId: String(professionalId),
+            patientId: String(resolvedPatientId),
+            date,
+            time,
+            status,
+            reason: reason ?? null,
+            patientName,
+            patientDni: String(patientDni),
+            patientEmail: patientEmail ?? null,
+            patientPhone: patientPhone ?? null,
+            healthInsurance: healthInsurance ?? null
+        });
+
+    } catch (error) {
+        if (conexion) {
+            await conexion.rollback();
+        }
+
+        console.error('Error al crear turno:', error);
+
+        return res.status(500).json({
+            message: 'Error al crear el turno'
+        });
+
+    } finally {
+        if (conexion) {
+            conexion.release();
         }
     }
-);
+}
+
+// Alias público (mismo handler). Preferir POST /turnos.
+router.post('/turnos/reservar', crearTurnoHandler);
+
+// Ruta principal: panel (con JWT) y wizard público (sin JWT)
+router.post('/turnos', autenticarTokenOpcional, crearTurnoHandler);
 
 
 
@@ -1943,8 +2153,22 @@ router.get(
             t.id_clinica AS clinicId,
             t.id_usuario AS professionalId,
             t.fecha AS date,
-            TIME_FORMAT(t.hora, '%H:%i') AS time
+            TIME_FORMAT(t.hora, '%H:%i') AS time,
+            t.id_paciente AS patientId,
+            t.estado AS status,
+            t.motivo AS reason,
+            u.nombre AS profFirstName,
+            u.apellido AS profLastName,
+            p.nombre AS firstName,
+            p.apellido AS lastName,
+            CONCAT(COALESCE(p.nombre, ''), ' ', COALESCE(p.apellido, '')) AS patientName,
+            p.dni AS patientDni,
+            p.email AS patientEmail,
+            p.telefono AS patientPhone,
+            p.obra_social AS healthInsurance
          FROM turnos t
+         LEFT JOIN usuarios u ON t.id_usuario = u.id
+         LEFT JOIN pacientes p ON t.id_paciente = p.id
          WHERE t.id_clinica = ?
            AND t.id_usuario = ?
          ORDER BY t.fecha ASC, t.hora ASC`,
@@ -2651,6 +2875,631 @@ router.delete(
       return res.status(500).json({
         success: false,
         message: 'Error interno al eliminar el informe'
+      });
+    }
+  }
+);
+
+// ═══════════════════════════════════════════════════════════════════════════
+// SISTEMA DE GESTIÓN DE HORARIOS (CONFIGURACIÓN BASE + EXCEPCIONES)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// ARQUITECTURA DE HORARIOS:
+//
+// 1. CONFIGURACIÓN BASE (horarios_base):
+//    - Define el horario estándar L-V 8:00-18:00 de la clínica
+//    - Cada profesional puede tener su propia configuración base
+//    - Campos: usuario_id, dia (1-5), hora_inicio, hora_fin, duracion, activo
+//
+// 2. EXCEPCIONES (horarios_excepciones):
+//    - Bloqueos específicos de fechas/horarios
+//    - Tipos: 'vacacion', 'feriado', 'no_disponible', 'bloqueo_temporal'
+//    - Campos: usuario_id, fecha, hora_inicio, hora_fin, tipo, motivo
+//
+// 3. ALGORITMO DE DISPONIBILIDAD:
+//    - Comienza con configuración base (L-V 8-18)
+//    - Aplica excepciones (feriados, vacaciones, bloqueos)
+//    - Rest turnos ya reservados
+//    - Retorna slots disponibles
+//
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Obtiene la configuración de horarios de un profesional.
+ * Si no tiene configuración personal, usa la configuración base de la clínica (L-V 8-18).
+ *
+ * GET /v1/profesionales/:id/horarios-config
+ *
+ * @returns {Promise<Array<{dia: number, hora_inicio: string, hora_fin: string, duracion: number, activo: boolean}>>}
+ */
+router.get(
+  '/profesionales/:professionalId/horarios-config',
+  autenticarToken,
+  async (req, res) => {
+    try {
+      const { professionalId } = req.params;
+
+      if (!/^\d+$/.test(professionalId)) {
+        return res.status(400).json({
+          message: 'professionalId inválido'
+        });
+      }
+
+      // Verificar acceso: administrativo o el propio profesional
+      const usuarioId = String(req.user.id);
+      const rol = String(req.user.rol ?? req.user.nivel ?? '').toLowerCase();
+      const esAdministrativo = ['administrativo', 'admin'].includes(rol) || ['1', '10'].includes(rol);
+      const esPropioProfesional = usuarioId === String(professionalId);
+
+      if (!esAdministrativo && !esPropioProfesional) {
+        return res.status(403).json({
+          message: 'No tenés permiso para ver la configuración de horarios'
+        });
+      }
+
+      // Buscar configuración personal del profesional
+      const horariosPersonal = await pool.query(
+        `SELECT dia, hora_inicio, hora_fin, duracion, activo
+         FROM horarios_base
+         WHERE usuario_id = ?
+         ORDER BY dia ASC, hora_inicio ASC`,
+        [professionalId]
+      );
+
+      // Si tiene configuración personal, devolverla
+      if (horariosPersonal.length > 0) {
+        return res.status(200).json(horariosPersonal);
+      }
+
+      // Si no tiene configuración personal, usar configuración base (L-V 8-18)
+      const configuracionBase = [
+        { dia: 1, hora_inicio: '08:00:00', hora_fin: '18:00:00', duracion: 30, activo: true },
+        { dia: 2, hora_inicio: '08:00:00', hora_fin: '18:00:00', duracion: 30, activo: true },
+        { dia: 3, hora_inicio: '08:00:00', hora_fin: '18:00:00', duracion: 30, activo: true },
+        { dia: 4, hora_inicio: '08:00:00', hora_fin: '18:00:00', duracion: 30, activo: true },
+        { dia: 5, hora_inicio: '08:00:00', hora_fin: '18:00:00', duracion: 30, activo: true },
+      ];
+
+      return res.status(200).json(configuracionBase);
+
+    } catch (error) {
+      console.error('Error al obtener configuración de horarios:', error);
+      return res.status(500).json({
+        message: 'Error al obtener la configuración de horarios'
+      });
+    }
+  }
+);
+
+/**
+ * Actualiza la configuración de horarios de un profesional.
+ * Reemplaza toda la configuración existente.
+ *
+ * PUT /v1/profesionales/:id/horarios-config
+ * Body: [{ dia, hora_inicio, hora_fin, duracion, activo }]
+ *
+ * @returns {Promise<{success: boolean, message: string}>}
+ */
+router.put(
+  '/profesionales/:professionalId/horarios-config',
+  autenticarToken,
+  async (req, res) => {
+    let conexion;
+
+    try {
+      const { professionalId } = req.params;
+      const { horarios } = req.body;
+
+      if (!/^\d+$/.test(professionalId)) {
+        return res.status(400).json({
+          message: 'professionalId inválido'
+        });
+      }
+
+      // Verificar acceso: administrativo o el propio profesional
+      const usuarioId = String(req.user.id);
+      const rol = String(req.user.rol ?? req.user.nivel ?? '').toLowerCase();
+      const esAdministrativo = ['administrativo', 'admin'].includes(rol) || ['1', '10'].includes(rol);
+      const esPropioProfesional = usuarioId === String(professionalId);
+
+      if (!esAdministrativo && !esPropioProfesional) {
+        return res.status(403).json({
+          message: 'No tenés permiso para modificar la configuración de horarios'
+        });
+      }
+
+      if (!Array.isArray(horarios) || horarios.length === 0) {
+        return res.status(400).json({
+          message: 'Se requiere un array de horarios'
+        });
+      }
+
+      // Validar cada horario
+      for (const h of horarios) {
+        if (!h.dia || h.dia < 1 || h.dia > 7) {
+          return res.status(400).json({
+            message: 'Día inválido (debe ser 1-7)'
+          });
+        }
+        if (!h.hora_inicio || !/^\d{2}:\d{2}:\d{2}$/.test(h.hora_inicio)) {
+          return res.status(400).json({
+            message: 'hora_inicio inválida (formato HH:MM:SS)'
+          });
+        }
+        if (!h.hora_fin || !/^\d{2}:\d{2}:\d{2}$/.test(h.hora_fin)) {
+          return res.status(400).json({
+            message: 'hora_fin inválida (formato HH:MM:SS)'
+          });
+        }
+        if (!h.duracion || h.duracion < 5 || h.duracion > 180) {
+          return res.status(400).json({
+            message: 'duración inválida (entre 5 y 180 minutos)'
+          });
+        }
+      }
+
+      conexion = await pool.getConnection();
+      await conexion.beginTransaction();
+
+      // Eliminar configuración anterior
+      await conexion.query(
+        `DELETE FROM horarios_base WHERE usuario_id = ?`,
+        [professionalId]
+      );
+
+      // Insertar nueva configuración
+      for (const h of horarios) {
+        await conexion.query(
+          `INSERT INTO horarios_base (usuario_id, dia, hora_inicio, hora_fin, duracion, activo)
+           VALUES (?, ?, ?, ?, ?, ?)`,
+          [professionalId, h.dia, h.hora_inicio, h.hora_fin, h.duracion, h.activo !== false]
+        );
+      }
+
+      await conexion.commit();
+
+      return res.status(200).json({
+        success: true,
+        message: 'Configuración de horarios actualizada correctamente'
+      });
+
+    } catch (error) {
+      if (conexion) {
+        await conexion.rollback();
+      }
+      console.error('Error al actualizar configuración de horarios:', error);
+      return res.status(500).json({
+        message: 'Error al actualizar la configuración de horarios'
+      });
+    } finally {
+      if (conexion) {
+        conexion.release();
+      }
+    }
+  }
+);
+
+/**
+ * Obtiene las excepciones de horarios de un profesional (bloqueos, vacaciones, feriados).
+ *
+ * GET /v1/profesionales/:id/horarios-excepciones?fecha_desde=YYYY-MM-DD&fecha_hasta=YYYY-MM-DD
+ *
+ * @returns {Promise<Array<{id: number, fecha: string, hora_inicio: string, hora_fin: string, tipo: string, motivo: string}>>}
+ */
+router.get(
+  '/profesionales/:professionalId/horarios-excepciones',
+  autenticarToken,
+  async (req, res) => {
+    try {
+      const { professionalId } = req.params;
+      const { fecha_desde, fecha_hasta } = req.query;
+
+      console.log('GET excepciones - professionalId:', professionalId, 'req.user:', req.user);
+
+      if (!/^\d+$/.test(professionalId)) {
+        return res.status(400).json({
+          message: 'professionalId inválido'
+        });
+      }
+
+      // Verificar acceso: administrativo o el propio profesional
+      const usuarioId = String(req.user.id);
+      const rol = String(req.user.rol ?? req.user.nivel ?? '').toLowerCase();
+      const esAdministrativo = ['administrativo', 'admin'].includes(rol) || ['1', '10'].includes(rol);
+      const esPropioProfesional = usuarioId === String(professionalId);
+
+      console.log('Autorización:', { usuarioId, professionalId, rol, esAdministrativo, esPropioProfesional });
+
+      if (!esAdministrativo && !esPropioProfesional) {
+        return res.status(403).json({
+          message: 'No tenés permiso para ver las excepciones de horarios'
+        });
+      }
+
+      let query = `
+        SELECT id, fecha, hora_inicio, hora_fin, tipo, motivo
+        FROM horarios_excepciones
+        WHERE usuario_id = ?
+      `;
+      const params = [professionalId];
+
+      if (fecha_desde) {
+        query += ` AND fecha >= ?`;
+        params.push(fecha_desde);
+      }
+      if (fecha_hasta) {
+        query += ` AND fecha <= ?`;
+        params.push(fecha_hasta);
+      }
+
+      query += ` ORDER BY fecha ASC, hora_inicio ASC`;
+
+      const excepciones = await pool.query(query, params);
+
+      console.log('Excepciones recuperadas:', excepciones.length);
+
+      return res.status(200).json(excepciones);
+
+    } catch (error) {
+      console.error('Error al obtener excepciones de horarios:', error);
+      console.error('Detalles:', {
+        code: error.code,
+        sqlMessage: error.sqlMessage,
+        sqlState: error.sqlState
+      });
+      return res.status(500).json({
+        message: 'Error al obtener las excepciones de horarios',
+        error: error.sqlMessage || error.message
+      });
+    }
+  }
+);
+
+/**
+ * Crea una excepción de horario (bloqueo de fecha/horario específico).
+ *
+ * POST /v1/profesionales/:id/horarios-excepciones
+ * Body: { fecha, hora_inicio?, hora_fin?, tipo, motivo }
+ *
+ * Tipos: 'vacacion', 'feriado', 'no_disponible', 'bloqueo_temporal'
+ *
+ * @returns {Promise<{success: boolean, message: string, id: number}>}
+ */
+router.post(
+  '/profesionales/:professionalId/horarios-excepciones',
+  autenticarToken,
+  async (req, res) => {
+    try {
+      const { professionalId } = req.params;
+      const { fecha, hora_inicio, hora_fin, tipo, motivo } = req.body;
+
+      if (!/^\d+$/.test(professionalId)) {
+        return res.status(400).json({
+          message: 'professionalId inválido'
+        });
+      }
+
+      // Verificar acceso: administrativo o el propio profesional
+      const usuarioId = String(req.user.id);
+      const rol = String(req.user.rol ?? req.user.nivel ?? '').toLowerCase();
+      const esAdministrativo = ['administrativo', 'admin'].includes(rol) || ['1', '10'].includes(rol);
+      const esPropioProfesional = usuarioId === String(professionalId);
+
+      if (!esAdministrativo && !esPropioProfesional) {
+        return res.status(403).json({
+          message: 'No tenés permiso para crear excepciones de horarios'
+        });
+      }
+
+      // Validaciones
+      if (!fecha || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+        return res.status(400).json({
+          message: 'Fecha inválida (formato YYYY-MM-DD)'
+        });
+      }
+
+      if (!tipo || !['vacacion', 'feriado', 'no_disponible', 'bloqueo_temporal'].includes(tipo)) {
+        return res.status(400).json({
+          message: 'Tipo inválido (vacacion, feriado, no_disponible, bloqueo_temporal)'
+        });
+      }
+
+      // Si es bloqueo parcial, validar horas
+      if (tipo === 'bloqueo_temporal') {
+        if (!hora_inicio || !/^\d{2}:\d{2}:\d{2}$/.test(hora_inicio)) {
+          return res.status(400).json({
+            message: 'hora_inicio requerida para bloqueo temporal (formato HH:MM:SS)'
+          });
+        }
+        if (!hora_fin || !/^\d{2}:\d{2}:\d{2}$/.test(hora_fin)) {
+          return res.status(400).json({
+            message: 'hora_fin requerida para bloqueo temporal (formato HH:MM:SS)'
+          });
+        }
+      }
+
+      const resultado = await pool.query(
+        `INSERT INTO horarios_excepciones
+         (usuario_id, fecha, hora_inicio, hora_fin, tipo, motivo)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [professionalId, fecha, hora_inicio || null, hora_fin || null, tipo, motivo || null]
+      );
+
+      return res.status(201).json({
+        success: true,
+        message: 'Excepción de horario creada correctamente',
+        id: Number(resultado.insertId)
+      });
+
+    } catch (error) {
+      console.error('Error al crear excepción de horario:', error);
+      console.error('Detalles del error:', {
+        code: error.code,
+        sqlMessage: error.sqlMessage,
+        sqlState: error.sqlState
+      });
+
+      // Si la tabla no existe, dar un mensaje más claro
+      if (error.code === 'ER_NO_SUCH_TABLE') {
+        return res.status(500).json({
+          message: 'La tabla horarios_excepciones no existe. Ejecuta el script SQL: create_horarios_tables.sql',
+          error: error.sqlMessage
+        });
+      }
+
+      return res.status(500).json({
+        message: 'Error al crear la excepción de horario',
+        error: error.sqlMessage || error.message
+      });
+    }
+  }
+);
+
+/**
+ * Elimina una excepción de horario.
+ *
+ * DELETE /v1/profesionales/:id/horarios-excepciones/:excepcionId
+ *
+ * @returns {Promise<{success: boolean, message: string}>}
+ */
+router.delete(
+  '/profesionales/:professionalId/horarios-excepciones/:excepcionId',
+  autenticarToken,
+  async (req, res) => {
+    try {
+      const { professionalId, excepcionId } = req.params;
+
+      if (!/^\d+$/.test(professionalId) || !/^\d+$/.test(excepcionId)) {
+        return res.status(400).json({
+          message: 'IDs inválidos'
+        });
+      }
+
+      // Verificar acceso: administrativo o el propio profesional
+      const usuarioId = String(req.user.id);
+      const rol = String(req.user.rol ?? req.user.nivel ?? '').toLowerCase();
+      const esAdministrativo = ['administrativo', 'admin'].includes(rol) || ['1', '10'].includes(rol);
+      const esPropioProfesional = usuarioId === String(professionalId);
+
+      if (!esAdministrativo && !esPropioProfesional) {
+        return res.status(403).json({
+          message: 'No tenés permiso para eliminar excepciones de horarios'
+        });
+      }
+
+      // Verificar que la excepción pertenezca al profesional
+      const excepcion = await pool.query(
+        `SELECT id FROM horarios_excepciones
+         WHERE id = ? AND usuario_id = ?`,
+        [excepcionId, professionalId]
+      );
+
+      if (excepcion.length === 0) {
+        return res.status(404).json({
+          message: 'Excepción no encontrada'
+        });
+      }
+
+      await pool.query(
+        `DELETE FROM horarios_excepciones WHERE id = ?`,
+        [excepcionId]
+      );
+
+      return res.status(200).json({
+        success: true,
+        message: 'Excepción de horario eliminada correctamente'
+      });
+
+    } catch (error) {
+      console.error('Error al eliminar excepción de horario:', error);
+      return res.status(500).json({
+        message: 'Error al eliminar la excepción de horario'
+      });
+    }
+  }
+);
+
+/**
+ * Verifica si las tablas de horarios existen (endpoint de diagnóstico)
+ *
+ * GET /v1/sistema/horarios-check
+ *
+ * @returns {Promise<{horarios_base: boolean, horarios_excepciones: boolean}>}
+ */
+router.get('/sistema/horarios-check', async (req, res) => {
+  try {
+    const [baseTable] = await pool.query(
+      `SELECT COUNT(*) as count FROM information_schema.tables
+       WHERE table_schema = DATABASE()
+       AND table_name = 'horarios_base'`
+    );
+
+    const [excepcionesTable] = await pool.query(
+      `SELECT COUNT(*) as count FROM information_schema.tables
+       WHERE table_schema = DATABASE()
+       AND table_name = 'horarios_excepciones'`
+    );
+
+    return res.status(200).json({
+      horarios_base: baseTable.count > 0,
+      horarios_excepciones: excepcionesTable.count > 0
+    });
+  } catch (error) {
+    console.error('Error al verificar tablas:', error);
+    return res.status(500).json({
+      message: 'Error al verificar tablas de horarios'
+    });
+  }
+});
+
+/**
+ * Obtiene la disponibilidad real de un profesional para una fecha específica.
+ * Combina configuración base + excepciones + turnos ya reservados.
+ *
+ * GET /v1/profesionales/:id/disponibilidad?fecha=YYYY-MM-DD
+ *
+ * @returns {Promise<{fecha: string, horarios: Array<{horario: string, disponible: boolean, motivo?: string}>}>}
+ */
+router.get(
+  '/profesionales/:professionalId/disponibilidad',
+  autenticarToken,
+  async (req, res) => {
+    try {
+      const { professionalId } = req.params;
+      const { fecha } = req.query;
+
+      if (!/^\d+$/.test(professionalId)) {
+        return res.status(400).json({
+          message: 'professionalId inválido'
+        });
+      }
+
+      if (!fecha || !/^\d{4}-\d{2}-\d{2}$/.test(fecha)) {
+        return res.status(400).json({
+          message: 'Fecha inválida (formato YYYY-MM-DD)'
+        });
+      }
+
+      // Determinar día de la semana (1=Lunes, ..., 7=Domingo)
+      const [anio, mes, dia] = fecha.split('-').map(Number);
+      const fechaObj = new Date(anio, mes - 1, dia);
+      const diaSemana = fechaObj.getDay() === 0 ? 7 : fechaObj.getDay();
+
+      // 1. Obtener configuración base del profesional
+      const configBase = await pool.query(
+        `SELECT dia, hora_inicio, hora_fin, duracion, activo
+         FROM horarios_base
+         WHERE usuario_id = ? AND dia = ? AND activo = true
+         LIMIT 1`,
+        [professionalId, diaSemana]
+      );
+
+      // Si no tiene configuración personal, usar configuración base (L-V 8-18)
+      let horarioConfig = configBase[0];
+      if (!horarioConfig && diaSemana >= 1 && diaSemana <= 5) {
+        horarioConfig = {
+          hora_inicio: '08:00:00',
+          hora_fin: '18:00:00',
+          duracion: 30
+        };
+      }
+
+      // Si no hay configuración para este día (sábado/domingo sin config personal)
+      if (!horarioConfig) {
+        return res.status(200).json({
+          fecha,
+          horarios: []
+        });
+      }
+
+      // 2. Generar slots de tiempo basados en la configuración
+      const slots = [];
+      let [horaInicio, minutoInicio] = horarioConfig.hora_inicio.split(':').map(Number);
+      const [horaFin, minutoFin] = horarioConfig.hora_fin.split(':').map(Number);
+      const duracion = horarioConfig.duracion;
+
+      while (true) {
+        const horaActual = horaInicio * 60 + minutoInicio;
+        const horaFinMinutos = horaFin * 60 + minutoFin;
+
+        if (horaActual >= horaFinMinutos) break;
+
+        const horaStr = `${String(horaInicio).padStart(2, '0')}:${String(minutoInicio).padStart(2, '0')}`;
+        slots.push({
+          horario: horaStr,
+          disponible: true,
+          motivo: null
+        });
+
+        // Avanzar duración
+        minutoInicio += duracion;
+        while (minutoInicio >= 60) {
+          minutoInicio -= 60;
+          horaInicio++;
+        }
+      }
+
+      // 3. Obtener excepciones para esta fecha
+      const excepciones = await pool.query(
+        `SELECT hora_inicio, hora_fin, tipo, motivo
+         FROM horarios_excepciones
+         WHERE usuario_id = ? AND fecha = ?`,
+        [professionalId, fecha]
+      );
+
+      // 4. Obtener turnos ya reservados
+      const turnos = await pool.query(
+        `SELECT hora
+         FROM turnos
+         WHERE id_usuario = ? AND fecha = ? AND estado != 'cancelado'`,
+        [professionalId, fecha]
+      );
+
+      // 5. Marcar slots no disponibles
+      const turnosOcupados = new Set(turnos.map(t => t.hora.slice(0, 5)));
+
+      for (const exc of excepciones) {
+        // Bloqueo total del día
+        if (!exc.hora_inicio && !exc.hora_fin) {
+          slots.forEach(s => {
+            s.disponible = false;
+            s.motivo = exc.motivo || exc.tipo;
+          });
+          break;
+        }
+
+        // Bloqueo parcial
+        const horaInicioExc = exc.hora_inicio.slice(0, 5);
+        const horaFinExc = exc.hora_fin ? exc.hora_fin.slice(0, 5) : null;
+
+        slots.forEach(s => {
+          if (!s.disponible) return;
+
+          // Verificar si el slot está dentro del rango bloqueado
+          if (s.horario >= horaInicioExc && (!horaFinExc || s.horario < horaFinExc)) {
+            s.disponible = false;
+            s.motivo = exc.motivo || exc.tipo;
+          }
+        });
+      }
+
+      // Marcar turnos ocupados
+      slots.forEach(s => {
+        if (turnosOcupados.has(s.horario)) {
+          s.disponible = false;
+          s.motivo = 'turno_reservado';
+        }
+      });
+
+      return res.status(200).json({
+        fecha,
+        horarios: slots
+      });
+
+    } catch (error) {
+      console.error('Error al obtener disponibilidad:', error);
+      return res.status(500).json({
+        message: 'Error al obtener la disponibilidad'
       });
     }
   }

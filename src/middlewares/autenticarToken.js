@@ -66,3 +66,17 @@ export async function autenticarToken(req, res, next) {
         });
     }
 }
+
+/**
+ * Igual que autenticarToken, pero si no hay Bearer continúa sin req.user.
+ * Útil para endpoints que sirven tanto al panel (con JWT) como al wizard público.
+ */
+export async function autenticarTokenOpcional(req, res, next) {
+    const authorization = req.headers.authorization;
+
+    if (!authorization || !authorization.startsWith("Bearer ")) {
+        return next();
+    }
+
+    return autenticarToken(req, res, next);
+}
