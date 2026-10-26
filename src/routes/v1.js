@@ -46,7 +46,7 @@ router.get('/', async (req, res) => {
 );
 
 }) */
-
+//traer clinicas
 router.get('/clinicas', async (req, res) => {
   try {
     const clinicas = await pool.query(`
