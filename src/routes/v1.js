@@ -2990,6 +2990,8 @@ router.put(
       const { professionalId } = req.params;
       const { horarios } = req.body;
 
+      console.log('PUT horarios-config - Datos recibidos:', { professionalId, horarios });
+
       if (!/^\d+$/.test(professionalId)) {
         return res.status(400).json({
           message: 'professionalId inválido'
@@ -3001,6 +3003,8 @@ router.put(
       const rol = String(req.user.rol ?? req.user.nivel ?? '').toLowerCase();
       const esAdministrativo = ['administrativo', 'admin'].includes(rol) || ['1', '10'].includes(rol);
       const esPropioProfesional = usuarioId === String(professionalId);
+
+      console.log('PUT horarios-config - Autorización:', { usuarioId, professionalId, rol, esAdministrativo, esPropioProfesional });
 
       if (!esAdministrativo && !esPropioProfesional) {
         return res.status(403).json({
@@ -3038,6 +3042,8 @@ router.put(
         }
       }
 
+      console.log('PUT horarios-config - Validación exitosa, comenzando transacción');
+
       conexion = await pool.getConnection();
       await conexion.beginTransaction();
 
@@ -3046,6 +3052,8 @@ router.put(
         `DELETE FROM horarios_base WHERE usuario_id = ?`,
         [professionalId]
       );
+
+      console.log('PUT horarios-config - Configuración anterior eliminada');
 
       // Insertar nueva configuración
       for (const h of horarios) {
@@ -3056,7 +3064,11 @@ router.put(
         );
       }
 
+      console.log('PUT horarios-config - Nueva configuración insertada');
+
       await conexion.commit();
+
+      console.log('PUT horarios-config - Transacción confirmada');
 
       return res.status(200).json({
         success: true,
@@ -3068,8 +3080,23 @@ router.put(
         await conexion.rollback();
       }
       console.error('Error al actualizar configuración de horarios:', error);
+      console.error('Detalles del error:', {
+        code: error.code,
+        sqlMessage: error.sqlMessage,
+        sqlState: error.sqlState
+      });
+
+      // Si la tabla no existe, dar un mensaje más claro
+      if (error.code === 'ER_NO_SUCH_TABLE') {
+        return res.status(500).json({
+          message: 'La tabla horarios_base no existe. Ejecuta el script SQL: create_horarios_tables.sql',
+          error: error.sqlMessage
+        });
+      }
+
       return res.status(500).json({
-        message: 'Error al actualizar la configuración de horarios'
+        message: 'Error al actualizar la configuración de horarios',
+        error: error.sqlMessage || error.message
       });
     } finally {
       if (conexion) {
