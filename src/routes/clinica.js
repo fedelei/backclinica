@@ -721,8 +721,10 @@ router.post('/agregarPersona',  async (req, res) => {
 
 router.post('/agregarespecialidad', async (req, res) => {
   try {
-    const { usuarioid, nombre } = req.body;
-console.log(usuarioid, nombre)
+    const { usuarioid, nombre, id_clinica } = req.body;
+
+    console.log('agregarespecialidad - usuarioid:', usuarioid, 'nombre:', nombre, 'id_clinica:', id_clinica);
+
     // Validaciones
     if (!usuarioid) {
       return res.status(400).json({
@@ -736,22 +738,66 @@ console.log(usuarioid, nombre)
       });
     }
 
-    // Insertar especialidad
-    const resultado = await pool.query(
-      `INSERT INTO especialidades 
-       (nombre, id_medico)
-       VALUES (?, ?)`,
-      [
-        nombre.trim(),
-        usuarioid
-      ]
+    // id_clinica es opcional, pero si no se proporciona, necesitamos buscarlo
+    let clinicaId = id_clinica;
+    if (!clinicaId) {
+      const usuarioClinica = await pool.query(
+        'SELECT id_clinica FROM usuarios WHERE id = ?',
+        [usuarioid]
+      );
+      if (usuarioClinica.length > 0) {
+        clinicaId = usuarioClinica[0].id_clinica;
+      }
+    }
+
+    if (!clinicaId) {
+      return res.status(400).json({
+        message: 'No se pudo determinar la clínica del usuario'
+      });
+    }
+
+    // Buscar si la especialidad ya existe en la clínica
+    const especialidadExistente = await pool.query(
+      `SELECT id FROM especialidades WHERE nombre = ? AND id_clinica = ?`,
+      [nombre.trim(), clinicaId]
     );
+
+    let especialidadId;
+    if (especialidadExistente.length > 0) {
+      especialidadId = especialidadExistente[0].id;
+      console.log('Especialidad ya existe, ID:', especialidadId);
+    } else {
+      // Crear nueva especialidad
+      const resultado = await pool.query(
+        `INSERT INTO especialidades (nombre, id_clinica) VALUES (?, ?)`,
+        [nombre.trim(), clinicaId]
+      );
+      especialidadId = resultado.insertId;
+      console.log('Nueva especialidad creada, ID:', especialidadId);
+    }
+
+    // Crear relación en especializacion (médico-especialidad)
+    // Verificar si ya existe la relación
+    const relacionExistente = await pool.query(
+      `SELECT * FROM especializacion WHERE id_medico = ? AND id_especialidad = ?`,
+      [usuarioid, especialidadId]
+    );
+
+    if (relacionExistente.length === 0) {
+      await pool.query(
+        `INSERT INTO especializacion (id_medico, id_especialidad) VALUES (?, ?)`,
+        [usuarioid, especialidadId]
+      );
+      console.log('Relación especializacion creada');
+    } else {
+      console.log('Relación especializacion ya existe');
+    }
 
     return res.status(201).json({
       message: 'Especialidad agregada correctamente',
-     // id: resultado.insertId,
+      especialidadId: especialidadId,
       nombre: nombre.trim(),
-      ig_medico: usuarioid
+      id_medico: usuarioid
     });
 
   } catch (error) {

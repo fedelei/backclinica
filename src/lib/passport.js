@@ -75,7 +75,7 @@ passport.use(
         async (req, usuario, password, done) => {
             try {
                 // Recibir los datos del formulario
-                let { nombre, nivel, rol, id_clinica, apellido } = req.body;
+                let { nombre, nivel, rol, id_clinica, apellido, especialidad } = req.body;
 
                 // Nivel predeterminado
                 if (nivel === undefined) {
@@ -125,9 +125,55 @@ passport.use(
                     ]
                 );
 
+                const newUserId = Number(result.insertId);
+
+                // Crear registro en tabla trabajo (relación usuario-clínica)
+                // Esto es necesario para que el profesional aparezca en la clínica
+                try {
+                    await pool.query(
+                        `INSERT INTO trabajo (id_usuario, id_clinica) VALUES (?, ?)`,
+                        [newUserId, id_clinica]
+                    );
+                } catch (trabajoError) {
+                    console.error('Error al crear registro en trabajo:', trabajoError);
+                    // No fallamos el registro si falla trabajo, pero lo logeamos
+                }
+
+                // Si se proporcionó especialidad, crear la relación
+                if (especialidad && especialidad.trim()) {
+                    try {
+                        // Buscar si la especialidad ya existe en la clínica
+                        const especialidadExistente = await pool.query(
+                            `SELECT id FROM especialidades WHERE nombre = ? AND id_clinica = ?`,
+                            [especialidad.trim(), id_clinica]
+                        );
+
+                        let especialidadId;
+                        if (especialidadExistente.length > 0) {
+                            especialidadId = especialidadExistente[0].id;
+                        } else {
+                            // Crear nueva especialidad
+                            const resultadoEspecialidad = await pool.query(
+                                `INSERT INTO especialidades (nombre, id_clinica) VALUES (?, ?)`,
+                                [especialidad.trim(), id_clinica]
+                            );
+                            especialidadId = resultadoEspecialidad.insertId;
+                        }
+
+                        // Crear relación en especializacion
+                        await pool.query(
+                            `INSERT INTO especializacion (id_medico, id_especialidad) VALUES (?, ?)`,
+                            [newUserId, especialidadId]
+                        );
+                    } catch (especialidadError) {
+                        console.error('Error al crear especialidad:', especialidadError);
+                        // No fallamos el registro si falla la especialidad
+                    }
+                }
+
                 // Datos del nuevo usuario
                 const newUser = {
-                    id: Number(result.insertId),
+                    id: newUserId,
                     usuario,
                     nombre,
                     apellido: apellido || null,
