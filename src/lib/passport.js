@@ -112,7 +112,7 @@ passport.use(
                 const result = await pool.query(
                     `INSERT INTO usuarios
                     SET password = ?, usuario = ?, nombre = ?, apellido = ?,
-                        nivel = ?, medico = ?, id_clinica = ?`,
+                        nivel = ?, medico = ?, id_clinica = ?, rol = ?`,
                     [
                         encryptedPassword,
                         usuario,
@@ -121,6 +121,7 @@ passport.use(
                         nivel,
                         medico,
                         id_clinica,
+                        rol,
                     ]
                 );
 
