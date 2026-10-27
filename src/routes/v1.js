@@ -535,6 +535,11 @@ router.post(
                 role = user.nivel === 2 ? 'profesional' : 'administrativo';
             }
 
+            // Normalizar siempre a minúsculas para consistencia
+            if (role) {
+                role = role.toLowerCase();
+            }
+
             // Datos que contendrá el token (incluyendo rol normalizado)
             const userForToken = {
                 id: user.id,
