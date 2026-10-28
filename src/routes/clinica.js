@@ -813,9 +813,9 @@ router.post('/agregarespecialidad', async (req, res) => {
 // Eliminar especialidad de un profesional
 router.delete('/eliminarespecialidad', async (req, res) => {
   try {
-    const { usuarioid, especialidad } = req.body;
+    const { usuarioid, especialidad, id_clinica } = req.body;
 
-    console.log('eliminarespecialidad - usuarioid:', usuarioid, 'especialidad:', especialidad);
+    console.log('eliminarespecialidad - usuarioid:', usuarioid, 'especialidad:', especialidad, 'id_clinica:', id_clinica);
 
     // Validaciones
     if (!usuarioid) {
@@ -830,15 +830,33 @@ router.delete('/eliminarespecialidad', async (req, res) => {
       });
     }
 
-    // Buscar el ID de la especialidad
+    // Determinar id_clinica si no se proporciona
+    let clinicaId = id_clinica;
+    if (!clinicaId) {
+      const usuarioClinica = await pool.query(
+        'SELECT id_clinica FROM usuarios WHERE id = ?',
+        [usuarioid]
+      );
+      if (usuarioClinica.length > 0) {
+        clinicaId = usuarioClinica[0].id_clinica;
+      }
+    }
+
+    if (!clinicaId) {
+      return res.status(400).json({
+        message: 'No se pudo determinar la clínica del usuario'
+      });
+    }
+
+    // Buscar el ID de la especialidad (filtrando por clínica)
     const especialidadData = await pool.query(
-      `SELECT id FROM especialidades WHERE nombre = ?`,
-      [especialidad.trim()]
+      `SELECT id FROM especialidades WHERE nombre = ? AND id_clinica = ?`,
+      [especialidad.trim(), clinicaId]
     );
 
     if (especialidadData.length === 0) {
       return res.status(404).json({
-        message: 'Especialidad no encontrada'
+        message: 'Especialidad no encontrada en esta clínica'
       });
     }
 
