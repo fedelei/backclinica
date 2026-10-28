@@ -2791,10 +2791,20 @@ router.delete("/eliminarhorario/:id", async (req, res) => {
 
 
 ////////////para proabr
-router.get("/especialidades/", async (req, res) => {
+router.get("/especialidades", async (req, res) => {
 
 
 const horarios = await pool.query('select * from especialidades');
+
+res.json(horarios);
+
+})
+
+
+router.get("/horarios", async (req, res) => {
+
+
+const horarios = await pool.query('select * from horarios');
 
 res.json(horarios);
 
