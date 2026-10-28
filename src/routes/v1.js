@@ -2517,7 +2517,7 @@ router.post(
       // 4. Verificar que sea médico
       const usuarios = await pool.query(
         `SELECT id, medico
-         FROM clinica.usuarios
+         FROM usuarios
          WHERE id = ?
          LIMIT 1`,
         [usuarioId]
@@ -2542,7 +2542,7 @@ router.post(
       // 6. Verificar que trabaje en la clínica
       const trabajos = await pool.query(
         `SELECT id_usuario
-         FROM clinica.trabajo
+         FROM trabajo
          WHERE id_usuario = ?
            AND id_clinica = ?
          LIMIT 1`,
@@ -2558,7 +2558,7 @@ router.post(
       // 7. Verificar que el paciente exista
       const pacientes = await pool.query(
         `SELECT id
-         FROM clinica.pacientes
+         FROM pacientes
          WHERE id = ?
          LIMIT 1`,
         [patientId]
@@ -2575,7 +2575,7 @@ router.post(
       if (appointmentId != null) {
         const turnos = await pool.query(
           `SELECT id
-           FROM clinica.turnos
+           FROM turnos
            WHERE id = ?
              AND id_clinica = ?
              AND id_usuario = ?
@@ -2594,7 +2594,7 @@ router.post(
 
       // 9. Crear informe
       const resultado = await pool.query(
-        `INSERT INTO clinica.informes (
+        `INSERT INTO informes (
            id_clinica,
            id_usuario,
            id_paciente,
@@ -2717,7 +2717,7 @@ router.put(
       // 6. Verificar que el usuario sea médico
       const usuarios = await pool.query(
         `SELECT id, medico
-         FROM clinica.usuarios
+         FROM usuarios
          WHERE id = ?
          LIMIT 1`,
         [usuarioId]
@@ -2743,7 +2743,7 @@ router.put(
             fecha,
             diagnostico,
             tratamiento
-         FROM clinica.informes
+         FROM informes
          WHERE id = ?
            AND id_usuario = ?
          LIMIT 1`,
@@ -2770,7 +2770,7 @@ router.put(
           : informeActual.tratamiento;
 
       await pool.query(
-        `UPDATE clinica.informes
+        `UPDATE informes
          SET fecha = ?,
              diagnostico = ?,
              tratamiento = ?
@@ -2796,7 +2796,7 @@ router.put(
             DATE_FORMAT(fecha, '%Y-%m-%d') AS date,
             diagnostico AS diagnosis,
             tratamiento AS treatment
-         FROM clinica.informes
+         FROM informes
          WHERE id = ?
            AND id_usuario = ?
          LIMIT 1`,
