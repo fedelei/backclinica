@@ -92,6 +92,13 @@ passport.use(
                 // Determinar si es médico según el rol
                 const medico = rol === "Administrador" ? "No" : "Si";
 
+                // Si es profesional, especialidad es obligatoria
+                if (medico === "Si" && (!especialidad || !especialidad.trim())) {
+                    return done(null, false, {
+                        message: "El campo especialidad es obligatorio para profesionales",
+                    });
+                }
+
                 // Verificar si el usuario ya existe
                 const verif = await pool.query(
                     "SELECT * FROM usuarios WHERE usuario = ?",
