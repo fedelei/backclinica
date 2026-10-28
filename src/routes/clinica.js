@@ -2808,5 +2808,6 @@ const horarios = await pool.query('select * from horarios');
 
 res.json(horarios);
 
+
 })
 export default router;
