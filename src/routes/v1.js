@@ -1498,11 +1498,11 @@ router.get(
 
     
 const profesionales = await pool.query(
-  `SELECT DISTINCT
+  `SELECT 
       u.id,
       u.nombre AS firstName,
       u.apellido AS lastName,
-      e.nombre AS specialty
+      GROUP_CONCAT(DISTINCT e.nombre SEPARATOR ', ') AS specialty
    FROM trabajo t
    INNER JOIN usuarios u
       ON u.id = t.id_usuario
@@ -1513,7 +1513,8 @@ const profesionales = await pool.query(
      AND e.id_clinica = t.id_clinica
    WHERE t.id_clinica = ?
      AND u.medico = 'Si'
-   ORDER BY u.apellido, u.nombre, e.nombre`,
+   GROUP BY u.id, u.nombre, u.apellido
+   ORDER BY u.apellido, u.nombre`,
   [clinicId]
 );
 

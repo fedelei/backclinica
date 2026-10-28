@@ -795,7 +795,7 @@ router.post('/agregarespecialidad', async (req, res) => {
 
     return res.status(201).json({
       message: 'Especialidad agregada correctamente',
-      especialidadId: especialidadId,
+      especialidadId: Number(especialidadId),
       nombre: nombre.trim(),
       id_medico: usuarioid
     });
