@@ -562,7 +562,7 @@ router.post(
                     firstName: user.nombre,
                     lastName: user.apellido,
                     role: role,
-                    professionalId: user.id_profesional ?? null
+                    professionalId: user.medico === 'Si' ? user.id : null
                 },
 
                 clinicId: user.id_clinica,
@@ -642,7 +642,7 @@ router.get('/auth/me', autenticarToken, async (req, res) => {
                 firstName: user.nombre,
                 lastName: user.apellido,
                 role: role,
-                professionalId: user.id_profesional ?? null
+                professionalId: user.medico === 'Si' ? user.id : null
             },
 
             clinicId: user.id_clinica,
