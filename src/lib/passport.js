@@ -149,15 +149,17 @@ passport.use(
                 // Si se proporcionó especialidad, crear la relación
                 if (especialidad && especialidad.trim()) {
                     try {
-                        // Buscar si la especialidad ya existe en la clínica
+                        // Buscar si la especialidad ya existe en la clínica (case-insensitive)
                         const especialidadExistente = await pool.query(
-                            `SELECT id FROM especialidades WHERE nombre = ? AND id_clinica = ?`,
+                            `SELECT id FROM especialidades 
+                             WHERE LOWER(nombre) = LOWER(?) AND id_clinica = ?`,
                             [especialidad.trim(), id_clinica]
                         );
 
                         let especialidadId;
                         if (especialidadExistente.length > 0) {
                             especialidadId = especialidadExistente[0].id;
+                            console.log('Reutilizando especialidad existente, ID:', especialidadId);
                         } else {
                             // Crear nueva especialidad
                             const resultadoEspecialidad = await pool.query(
@@ -165,16 +167,29 @@ passport.use(
                                 [especialidad.trim(), id_clinica]
                             );
                             especialidadId = resultadoEspecialidad.insertId;
+                            console.log('Nueva especialidad creada, ID:', especialidadId);
                         }
 
-                        // Crear relación en especializacion
-                        await pool.query(
-                            `INSERT INTO especializacion (id_medico, id_especialidad) VALUES (?, ?)`,
+                        // Verificar si ya existe la relación para evitar duplicados
+                        const relacionExistente = await pool.query(
+                            `SELECT * FROM especializacion 
+                             WHERE id_medico = ? AND id_especialidad = ?`,
                             [newUserId, especialidadId]
                         );
+
+                        if (relacionExistente.length === 0) {
+                            await pool.query(
+                                `INSERT INTO especializacion (id_medico, id_especialidad) VALUES (?, ?)`,
+                                [newUserId, especialidadId]
+                            );
+                            console.log('Relación especializacion creada');
+                        } else {
+                            console.log('Relación especializacion ya existe');
+                        }
                     } catch (especialidadError) {
                         console.error('Error al crear especialidad:', especialidadError);
-                        // No fallamos el registro si falla la especialidad
+                        // Loguear el error pero no fallar el registro
+                        // Sin embargo, el profesional no tendrá especialidad
                     }
                 }
 

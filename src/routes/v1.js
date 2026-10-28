@@ -73,9 +73,9 @@ router.get('/clinicas', async (req, res) => {
 });
 
 
-//////v1/clinicas/1/especialidades
+//////v1/clinicas/:id/especialidades
 router.get('/clinicas/:id/especialidades', async (req, res) => {
-  const id_usuario = req.params.id;
+  const clinicaId = req.params.id;
 
   try {
     const especialidades = await pool.query(`
@@ -83,12 +83,9 @@ router.get('/clinicas/:id/especialidades', async (req, res) => {
         e.id,
         e.nombre
       FROM especialidades e
-      INNER JOIN trabajo t
-        ON t.id_clinica COLLATE utf8mb4_general_ci =
-           e.id_clinica COLLATE utf8mb4_general_ci
-      WHERE t.id_usuario = ?
+      WHERE e.id_clinica = ?
       ORDER BY e.nombre ASC
-    `, [id_usuario]);
+    `, [clinicaId]);
 
     res.json(especialidades);
 
@@ -182,8 +179,8 @@ router.get('/profesionales', async (req, res) => {
 
       WHERE t.id_clinica = ?
         AND u.medico = 'Si'
-        AND e.nombre COLLATE utf8mb4_general_ci =
-            CONVERT(? USING utf8mb4) COLLATE utf8mb4_general_ci
+        AND LOWER(e.nombre) COLLATE utf8mb4_general_ci =
+            LOWER(?) COLLATE utf8mb4_general_ci
 
       ORDER BY u.apellido ASC, u.nombre ASC
       `,
