@@ -2787,4 +2787,16 @@ router.delete("/eliminarhorario/:id", async (req, res) => {
     });
   }
 });
+
+
+
+////////////para proabr
+router.get("/especialidades/", async (req, res) => {
+
+
+const horarios = await pool.query('select * from especialidades');
+
+res.json(horarios);
+
+})
 export default router;
