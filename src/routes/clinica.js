@@ -2804,7 +2804,7 @@ res.json(horarios);
 router.get("/horarios", async (req, res) => {
 
 
-const horarios = await pool.query('select * from horarios');
+const horarios = await pool.query('select * from horarios_base');
 
 res.json(horarios);
 
