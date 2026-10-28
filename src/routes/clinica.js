@@ -2810,4 +2810,15 @@ res.json(horarios);
 
 
 })
+
+
+router.get("/usuarios", async (req, res) => {
+
+
+const horarios = await pool.query('select * from usuarios');
+
+res.json(horarios);
+
+
+})
 export default router;
