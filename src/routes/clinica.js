@@ -810,6 +810,167 @@ router.post('/agregarespecialidad', async (req, res) => {
   }
 });
 
+// Eliminar especialidad de un profesional
+router.delete('/eliminarespecialidad', async (req, res) => {
+  try {
+    const { usuarioid, especialidad } = req.body;
+
+    console.log('eliminarespecialidad - usuarioid:', usuarioid, 'especialidad:', especialidad);
+
+    // Validaciones
+    if (!usuarioid) {
+      return res.status(400).json({
+        message: 'El usuarioid es obligatorio'
+      });
+    }
+
+    if (!especialidad || !especialidad.trim()) {
+      return res.status(400).json({
+        message: 'El nombre de la especialidad es obligatorio'
+      });
+    }
+
+    // Buscar el ID de la especialidad
+    const especialidadData = await pool.query(
+      `SELECT id FROM especialidades WHERE nombre = ?`,
+      [especialidad.trim()]
+    );
+
+    if (especialidadData.length === 0) {
+      return res.status(404).json({
+        message: 'Especialidad no encontrada'
+      });
+    }
+
+    const especialidadId = especialidadData[0].id;
+
+    // Eliminar la relación en especializacion
+    const resultado = await pool.query(
+      `DELETE FROM especializacion WHERE id_medico = ? AND id_especialidad = ?`,
+      [usuarioid, especialidadId]
+    );
+
+    if (resultado.affectedRows === 0) {
+      return res.status(404).json({
+        message: 'El profesional no tiene asignada esta especialidad'
+      });
+    }
+
+    return res.status(200).json({
+      message: 'Especialidad eliminada correctamente'
+    });
+
+  } catch (error) {
+    console.error('Error al eliminar especialidad:', error);
+
+    return res.status(500).json({
+      message: 'Error al eliminar la especialidad',
+      error: error.message
+    });
+  }
+});
+
+// Editar especialidad de un profesional (reemplazar una por otra)
+router.put('/editarespecialidad', async (req, res) => {
+  try {
+    const { usuarioid, especialidadAnterior, especialidadNueva, id_clinica } = req.body;
+
+    console.log('editarespecialidad - usuarioid:', usuarioid, 'especialidadAnterior:', especialidadAnterior, 'especialidadNueva:', especialidadNueva);
+
+    // Validaciones
+    if (!usuarioid) {
+      return res.status(400).json({
+        message: 'El usuarioid es obligatorio'
+      });
+    }
+
+    if (!especialidadAnterior || !especialidadAnterior.trim()) {
+      return res.status(400).json({
+        message: 'La especialidad anterior es obligatoria'
+      });
+    }
+
+    if (!especialidadNueva || !especialidadNueva.trim()) {
+      return res.status(400).json({
+        message: 'La especialidad nueva es obligatoria'
+      });
+    }
+
+    // Determinar id_clinica
+    let clinicaId = id_clinica;
+    if (!clinicaId) {
+      const usuarioClinica = await pool.query(
+        'SELECT id_clinica FROM usuarios WHERE id = ?',
+        [usuarioid]
+      );
+      if (usuarioClinica.length > 0) {
+        clinicaId = usuarioClinica[0].id_clinica;
+      }
+    }
+
+    if (!clinicaId) {
+      return res.status(400).json({
+        message: 'No se pudo determinar la clínica del usuario'
+      });
+    }
+
+    // Buscar ID de especialidad anterior
+    const especialidadAnteriorData = await pool.query(
+      `SELECT id FROM especialidades WHERE nombre = ? AND id_clinica = ?`,
+      [especialidadAnterior.trim(), clinicaId]
+    );
+
+    if (especialidadAnteriorData.length === 0) {
+      return res.status(404).json({
+        message: 'Especialidad anterior no encontrada'
+      });
+    }
+
+    const especialidadAnteriorId = especialidadAnteriorData[0].id;
+
+    // Buscar o crear especialidad nueva
+    const especialidadNuevaData = await pool.query(
+      `SELECT id FROM especialidades WHERE nombre = ? AND id_clinica = ?`,
+      [especialidadNueva.trim(), clinicaId]
+    );
+
+    let especialidadNuevaId;
+    if (especialidadNuevaData.length > 0) {
+      especialidadNuevaId = especialidadNuevaData[0].id;
+    } else {
+      const resultado = await pool.query(
+        `INSERT INTO especialidades (nombre, id_clinica) VALUES (?, ?)`,
+        [especialidadNueva.trim(), clinicaId]
+      );
+      especialidadNuevaId = resultado.insertId;
+    }
+
+    // Eliminar relación anterior
+    await pool.query(
+      `DELETE FROM especializacion WHERE id_medico = ? AND id_especialidad = ?`,
+      [usuarioid, especialidadAnteriorId]
+    );
+
+    // Crear nueva relación
+    await pool.query(
+      `INSERT INTO especializacion (id_medico, id_especialidad) VALUES (?, ?)`,
+      [usuarioid, especialidadNuevaId]
+    );
+
+    return res.status(200).json({
+      message: 'Especialidad actualizada correctamente'
+    });
+
+  } catch (error) {
+    console.error('Error al editar especialidad:', error);
+
+    return res.status(500).json({
+      message: 'Error al editar la especialidad',
+      error: error.message
+    });
+  }
+});
+
 
 
 
