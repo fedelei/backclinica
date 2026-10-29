@@ -635,6 +635,13 @@ router.get('/auth/me', autenticarToken, async (req, res) => {
             role = user.nivel === 2 ? 'profesional' : 'administrativo';
         }
 
+        // Normalizar siempre a minúsculas (igual que en /auth/login)
+        // Si la DB almacena "Administrativo" o "Profesional" con mayúscula,
+        // el ProtectedRoute no matchea contra los allowedRoles en minúscula.
+        if (role) {
+            role = role.toLowerCase();
+        }
+
         return res.status(200).json({
             user: {
                 id: user.id,
