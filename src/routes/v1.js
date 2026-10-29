@@ -773,7 +773,7 @@ router.get(
                     t.id,
                     t.id_clinica AS clinicId,
                     t.id_usuario AS professionalId,
-                    t.fecha AS date,
+                    DATE_FORMAT(t.fecha, '%Y-%m-%d') AS date,
                     TIME_FORMAT(t.hora, '%H:%i') AS time,
                     t.id_paciente AS patientId,
                     t.estado AS status,
@@ -1006,9 +1006,9 @@ async function crearTurnoHandler(req, res) {
 
         const resultado = await conexion.query(
             `INSERT INTO turnos
-                (id_clinica, id_usuario, fecha, hora, id_paciente, estado)
-             VALUES (?, ?, ?, ?, ?, ?)`,
-            [clinicId, professionalId, date, time, resolvedPatientId, status]
+                (id_clinica, id_usuario, fecha, hora, id_paciente, estado, motivo)
+             VALUES (?, ?, ?, ?, ?, ?, ?)`,
+            [clinicId, professionalId, date, time, resolvedPatientId, status, reason ?? null]
         );
 
         await conexion.commit();
@@ -1202,12 +1202,16 @@ router.put(
                 `UPDATE turnos
                  SET id_usuario = ?,
                      fecha = ?,
-                     hora = ?
+                     hora = ?,
+                     estado = COALESCE(?, estado),
+                     motivo = COALESCE(?, motivo)
                  WHERE id = ?`,
                 [
                     professionalId,
                     date,
                     time,
+                    status ?? null,
+                    reason ?? null,
                     appointmentId
                 ]
             );
@@ -2155,7 +2159,7 @@ router.get(
             t.id,
             t.id_clinica AS clinicId,
             t.id_usuario AS professionalId,
-            t.fecha AS date,
+            DATE_FORMAT(t.fecha, '%Y-%m-%d') AS date,
             TIME_FORMAT(t.hora, '%H:%i') AS time,
             t.id_paciente AS patientId,
             t.estado AS status,
